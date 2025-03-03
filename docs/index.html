@@ -3,7 +3,6 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <meta http-equiv="X-UA-Compatible" content="IE=edge" />
     <title>Advanced Eye Tracking Experiment</title>
     
     <!-- Modern dependencies -->
@@ -182,16 +181,16 @@
       </div>
 
       <div class="controls">
-        <button class="btn" id="startBtn">Start Experiment</button>
-        <button class="btn" id="calibrateBtn" disabled>Calibrate</button>
-        <button class="btn" id="abortBtn" disabled>Stop Experiment</button>
+        <button class="btn" id="startBtn" type="button">Start Experiment</button>
+        <button class="btn" id="calibrateBtn" type="button" disabled>Calibrate</button>
+        <button class="btn" id="abortBtn" type="button" disabled>Stop Experiment</button>
       </div>
 
       <div id="experimentContainer"></div>
 
       <div class="export-container" id="exportContainer" style="display: none;">
-        <button class="btn export-btn" id="exportCSV">Download CSV Data</button>
-        <button class="btn export-btn" id="exportJSON">Download JSON Data</button>
+        <button class="btn export-btn" id="exportCSV" type="button">Download CSV Data</button>
+        <button class="btn export-btn" id="exportJSON" type="button">Download JSON Data</button>
       </div>
     </div>
 
@@ -205,6 +204,13 @@
       let calibrationData = [];
       let isExperimentRunning = false;
       let currentTrial = 0;
+      let heatmapEnabled = false;
+      let recordingSession = null;
+      let headCalibrationData = null;
+      let coordinatePlane = null;
+      let heatmapLayer = null;
+      let gazeHistory = [];
+      let recordingStartTime = null;
 
       // Configuration
       const config = {
@@ -213,7 +219,15 @@
         frameRate: 60,
         calibrationPoints: 9,
         trialCount: 5,
-        sampleRate: 30
+        sampleRate: 30,
+        heatmapResolution: 50,
+        heatmapOpacity: 0.6,
+        heatmapRadius: 50,
+        heatmapColorScale: ['blue', 'green', 'yellow', 'red'],
+        coordinatePlaneColor: 'rgba(255, 255, 255, 0.2)',
+        coordinatePlaneSpacing: 50,
+        recordingDuration: 60, // seconds
+        headCalibrationSamples: 30
       };
 
       // UI Elements
@@ -330,6 +344,461 @@
         return calibrationData.length === points.length;
       }
 
+      // Initialize coordinate plane for screen
+      function initCoordinatePlane() {
+        coordinatePlane = document.createElement('div');
+        coordinatePlane.id = 'coordinatePlane';
+        coordinatePlane.style.position = 'absolute';
+        coordinatePlane.style.top = '0';
+        coordinatePlane.style.left = '0';
+        coordinatePlane.style.width = '100%';
+        coordinatePlane.style.height = '100%';
+        coordinatePlane.style.pointerEvents = 'none';
+        coordinatePlane.style.zIndex = '1000';
+        document.body.appendChild(coordinatePlane);
+        
+        // Create canvas for coordinate plane
+        const canvas = document.createElement('canvas');
+        canvas.width = window.innerWidth;
+        canvas.height = window.innerHeight;
+        canvas.style.position = 'absolute';
+        canvas.style.top = '0';
+        canvas.style.left = '0';
+        coordinatePlane.appendChild(canvas);
+        
+        const ctx = canvas.getContext('2d');
+        ctx.strokeStyle = config.coordinatePlaneColor;
+        ctx.lineWidth = 1;
+        
+        // Draw vertical lines
+        for (let x = 0; x < canvas.width; x += config.coordinatePlaneSpacing) {
+          ctx.beginPath();
+          ctx.moveTo(x, 0);
+          ctx.lineTo(x, canvas.height);
+          ctx.stroke();
+        }
+        
+        // Draw horizontal lines
+        for (let y = 0; y < canvas.height; y += config.coordinatePlaneSpacing) {
+          ctx.beginPath();
+          ctx.moveTo(0, y);
+          ctx.lineTo(canvas.width, y);
+          ctx.stroke();
+        }
+        
+        // Add coordinate labels
+        for (let x = 0; x < canvas.width; x += config.coordinatePlaneSpacing * 2) {
+          const label = document.createElement('div');
+          label.textContent = x;
+          label.style.position = 'absolute';
+          label.style.left = `${x}px`;
+          label.style.top = '5px';
+          label.style.fontSize = '10px';
+          label.style.color = 'white';
+          coordinatePlane.appendChild(label);
+        }
+        
+        for (let y = 0; y < canvas.height; y += config.coordinatePlaneSpacing * 2) {
+          const label = document.createElement('div');
+          label.textContent = y;
+          label.style.position = 'absolute';
+          label.style.left = '5px';
+          label.style.top = `${y}px`;
+          label.style.fontSize = '10px';
+          label.style.color = 'white';
+          coordinatePlane.appendChild(label);
+        }
+        
+        return coordinatePlane;
+      }
+      
+      // Initialize heatmap layer
+      function initHeatmap() {
+        if (heatmapLayer) {
+          document.body.removeChild(heatmapLayer);
+        }
+        
+        heatmapLayer = document.createElement('canvas');
+        heatmapLayer.id = 'heatmapLayer';
+        heatmapLayer.width = window.innerWidth;
+        heatmapLayer.height = window.innerHeight;
+        heatmapLayer.style.position = 'absolute';
+        heatmapLayer.style.top = '0';
+        heatmapLayer.style.left = '0';
+        heatmapLayer.style.pointerEvents = 'none';
+        heatmapLayer.style.opacity = config.heatmapOpacity;
+        heatmapLayer.style.zIndex = '999';
+        document.body.appendChild(heatmapLayer);
+        
+        return heatmapLayer;
+      }
+      
+      // Update heatmap based on gaze history
+      function updateHeatmap() {
+        if (!heatmapLayer || !heatmapEnabled || gazeHistory.length === 0) return;
+        
+        const ctx = heatmapLayer.getContext('2d');
+        ctx.clearRect(0, 0, heatmapLayer.width, heatmapLayer.height);
+        
+        // Create heatmap data structure (simple 2D grid)
+        const gridSize = config.heatmapResolution;
+        const cellWidth = heatmapLayer.width / gridSize;
+        const cellHeight = heatmapLayer.height / gridSize;
+        const heatGrid = Array(gridSize).fill().map(() => Array(gridSize).fill(0));
+        
+        // Populate grid with gaze data
+        gazeHistory.forEach(point => {
+          if (!point || point.x === undefined || point.y === undefined) return;
+          
+          const gridX = Math.floor(point.x / cellWidth);
+          const gridY = Math.floor(point.y / cellHeight);
+          
+          if (gridX >= 0 && gridX < gridSize && gridY >= 0 && gridY < gridSize) {
+            heatGrid[gridY][gridX] += 1;
+          }
+        });
+        
+        // Find maximum value for normalization
+        let maxVal = 1;
+        for (let y = 0; y < gridSize; y++) {
+          for (let x = 0; x < gridSize; x++) {
+            maxVal = Math.max(maxVal, heatGrid[y][x]);
+          }
+        }
+        
+        // Draw heatmap
+        for (let y = 0; y < gridSize; y++) {
+          for (let x = 0; x < gridSize; x++) {
+            const intensity = heatGrid[y][x] / maxVal;
+            if (intensity > 0) {
+              const colorIndex = Math.min(
+                Math.floor(intensity * config.heatmapColorScale.length),
+                config.heatmapColorScale.length - 1
+              );
+              
+              ctx.fillStyle = config.heatmapColorScale[colorIndex];
+              ctx.beginPath();
+              ctx.arc(
+                x * cellWidth + cellWidth / 2,
+                y * cellHeight + cellHeight / 2,
+                config.heatmapRadius * Math.sqrt(intensity),
+                0, 2 * Math.PI
+              );
+              ctx.fill();
+            }
+          }
+        }
+      }
+      
+      // Head position and tilt calibration
+      async function calibrateHeadPosition() {
+        ui.statusText.textContent = 'Head Position Calibration...';
+        updateProgress(0);
+        
+        // Create visual guide for head position
+        const headGuide = document.createElement('div');
+        headGuide.style.position = 'absolute';
+        headGuide.style.top = '50%';
+        headGuide.style.left = '50%';
+        headGuide.style.transform = 'translate(-50%, -50%)';
+        headGuide.style.width = '300px';
+        headGuide.style.height = '300px';
+        headGuide.style.border = '2px dashed white';
+        headGuide.style.borderRadius = '50%';
+        headGuide.style.zIndex = '1001';
+        document.body.appendChild(headGuide);
+        
+        // Text instructions
+        const instructions = document.createElement('div');
+        instructions.textContent = 'Position your head in the center and remain still';
+        instructions.style.position = 'absolute';
+        instructions.style.top = 'calc(50% + 170px)';
+        instructions.style.left = '50%';
+        instructions.style.transform = 'translateX(-50%)';
+        instructions.style.color = 'white';
+        instructions.style.fontSize = '18px';
+        instructions.style.fontWeight = 'bold';
+        instructions.style.zIndex = '1002';
+        document.body.appendChild(instructions);
+        
+        // Collect head position samples
+        const samples = [];
+        for (let i = 0; i < config.headCalibrationSamples; i++) {
+          updateProgress((i / config.headCalibrationSamples) * 100);
+          
+          // Get current face position from WebGazer
+          const currentFace = await new Promise(resolve => {
+            webgazer.getCurrentFaceFeatures().then(features => {
+              resolve(features);
+            });
+          });
+          
+          if (currentFace) {
+            samples.push(currentFace);
+          }
+          
+          await new Promise(resolve => setTimeout(resolve, 100));
+        }
+        
+        // Calculate average head position and orientation
+        if (samples.length > 0) {
+          headCalibrationData = {
+            timestamp: Date.now(),
+            samples: samples,
+            averagePosition: calculateAverageHeadPosition(samples)
+          };
+          
+          showNotification('Head position calibrated successfully');
+        } else {
+          showNotification('Head calibration failed. Please try again.', true);
+        }
+        
+        // Clean up
+        document.body.removeChild(headGuide);
+        document.body.removeChild(instructions);
+        
+        return samples.length > 0;
+      }
+      
+      // Calculate average head position from samples
+      function calculateAverageHeadPosition(samples) {
+        if (!samples || samples.length === 0) return null;
+        
+        // This is a simplified version - in a real implementation,
+        // you would extract more detailed face metrics
+        const avgPosition = { x: 0, y: 0, width: 0, height: 0 };
+        
+        samples.forEach(sample => {
+          if (sample && sample.imagex !== undefined) {
+            avgPosition.x += sample.imagex;
+            avgPosition.y += sample.imagey;
+            avgPosition.width += sample.width;
+            avgPosition.height += sample.height;
+          }
+        });
+        
+        avgPosition.x /= samples.length;
+        avgPosition.y /= samples.length;
+        avgPosition.width /= samples.length;
+        avgPosition.height /= samples.length;
+        
+        return avgPosition;
+      }
+      
+      // Start recording session
+      async function startRecordingSession() {
+        if (recordingSession) {
+          stopRecordingSession();
+        }
+        
+        // Initialize recording components
+        gazeHistory = [];
+        recordingStartTime = Date.now();
+        
+        // Initialize coordinate plane and heatmap
+        initCoordinatePlane();
+        initHeatmap();
+        
+        // Create recording session object
+        recordingSession = {
+          id: `session_${Date.now()}`,
+          startTime: recordingStartTime,
+          frames: [],
+          headCalibration: headCalibrationData,
+          screenDimensions: {
+            width: window.innerWidth,
+            height: window.innerHeight
+          }
+        };
+        
+        // Start recording loop
+        ui.statusText.textContent = 'Recording in progress...';
+        isExperimentRunning = true;
+        
+        const recordingLoop = async () => {
+          if (!isExperimentRunning) return;
+          
+          const elapsedTime = (Date.now() - recordingStartTime) / 1000;
+          updateProgress((elapsedTime / config.recordingDuration) * 100);
+          
+          // Get current gaze prediction
+          const prediction = await webgazer.getCurrentPrediction();
+          if (prediction) {
+            // Add to history for heatmap
+            gazeHistory.push({
+              x: prediction.x,
+              y: prediction.y,
+              timestamp: Date.now() - recordingStartTime
+            });
+            
+            // Add to recording data
+            recordingSession.frames.push({
+              timestamp: Date.now() - recordingStartTime,
+              gazeX: prediction.x,
+              gazeY: prediction.y,
+              headPosition: await webgazer.getCurrentFaceFeatures()
+            });
+            
+            // Draw current gaze point
+            drawGazePoint(prediction.x, prediction.y);
+            
+            // Update heatmap if enabled
+            if (heatmapEnabled) {
+              updateHeatmap();
+            }
+          }
+          
+          // Check if recording duration has been reached
+          if (elapsedTime >= config.recordingDuration) {
+            stopRecordingSession();
+            showNotification('Recording completed');
+            ui.exportContainer.style.display = 'flex';
+          } else {
+            // Continue loop
+            requestAnimationFrame(recordingLoop);
+          }
+        };
+        
+        // Start the recording loop
+        recordingLoop();
+        
+        return true;
+      }
+      
+      // Stop recording session
+      function stopRecordingSession() {
+        isExperimentRunning = false;
+        
+        if (recordingSession) {
+          recordingSession.endTime = Date.now();
+          recordingSession.duration = recordingSession.endTime - recordingSession.startTime;
+          
+          // Save recording data
+          gazeData = recordingSession.frames;
+          
+          // Clean up
+          if (coordinatePlane) {
+            document.body.removeChild(coordinatePlane);
+            coordinatePlane = null;
+          }
+          
+          if (heatmapLayer) {
+            document.body.removeChild(heatmapLayer);
+            heatmapLayer = null;
+          }
+          
+          ui.statusText.textContent = 'Recording stopped';
+          updateProgress(100);
+        }
+      }
+      
+      // Draw current gaze point
+      function drawGazePoint(x, y) {
+        // Remove previous gaze point if exists
+        const existingPoint = document.getElementById('currentGazePoint');
+        if (existingPoint) {
+          document.body.removeChild(existingPoint);
+        }
+        
+        // Create new gaze point
+        const gazePoint = document.createElement('div');
+        gazePoint.id = 'currentGazePoint';
+        gazePoint.style.position = 'absolute';
+        gazePoint.style.top = `${y}px`;
+        gazePoint.style.left = `${x}px`;
+        gazePoint.style.width = '20px';
+        gazePoint.style.height = '20px';
+        gazePoint.style.borderRadius = '50%';
+        gazePoint.style.backgroundColor = 'rgba(255, 0, 0, 0.7)';
+        gazePoint.style.transform = 'translate(-50%, -50%)';
+        gazePoint.style.zIndex = '1003';
+        gazePoint.style.pointerEvents = 'none';
+        document.body.appendChild(gazePoint);
+        
+        // Add ripple effect
+        const ripple = document.createElement('div');
+        ripple.style.position = 'absolute';
+        ripple.style.top = '50%';
+        ripple.style.left = '50%';
+        ripple.style.width = '100%';
+        ripple.style.height = '100%';
+        ripple.style.borderRadius = '50%';
+        ripple.style.backgroundColor = 'rgba(255, 0, 0, 0.3)';
+        ripple.style.transform = 'translate(-50%, -50%) scale(1)';
+        ripple.style.transition = 'all 0.5s ease-out';
+        gazePoint.appendChild(ripple);
+        
+        setTimeout(() => {
+          ripple.style.transform = 'translate(-50%, -50%) scale(2)';
+          ripple.style.opacity = '0';
+        }, 10);
+      }
+      
+      // Toggle heatmap visibility
+      function toggleHeatmap() {
+        heatmapEnabled = !heatmapEnabled;
+        
+        if (heatmapEnabled) {
+          if (!heatmapLayer) {
+            initHeatmap();
+          }
+          updateHeatmap();
+          showNotification('Heatmap enabled');
+        } else {
+          if (heatmapLayer) {
+            const ctx = heatmapLayer.getContext('2d');
+            ctx.clearRect(0, 0, heatmapLayer.width, heatmapLayer.height);
+          }
+          showNotification('Heatmap disabled');
+        }
+      }
+      
+      // Export recording data
+      function exportRecordingData() {
+        if (!recordingSession || recordingSession.frames.length === 0) {
+          showNotification('No recording data available', true);
+          return;
+        }
+        
+        // Prepare CSV data
+        const csvContent = "data:text/csv;charset=utf-8," + 
+          "timestamp,gazeX,gazeY,headX,headY,headWidth,headHeight\n" +
+          recordingSession.frames.map(frame => {
+            const head = frame.headPosition || {};
+            return `${frame.timestamp},${frame.gazeX},${frame.gazeY},` +
+                   `${head.imagex || ''},${head.imagey || ''},` +
+                   `${head.width || ''},${head.height || ''}`;
+          }).join("\n");
+        
+        // Create download link
+        const csvLink = document.createElement('a');
+        csvLink.href = encodeURI(csvContent);
+        csvLink.download = `gaze_recording_${recordingSession.id}.csv`;
+        csvLink.click();
+        
+        // Prepare JSON data
+        const jsonContent = "data:text/json;charset=utf-8," + 
+          encodeURIComponent(JSON.stringify({
+            sessionInfo: {
+              id: recordingSession.id,
+              startTime: recordingSession.startTime,
+              endTime: recordingSession.endTime,
+              duration: recordingSession.duration,
+              screenDimensions: recordingSession.screenDimensions
+            },
+            headCalibration: recordingSession.headCalibration,
+            frames: recordingSession.frames
+          }));
+        
+        // Create download link
+        const jsonLink = document.createElement('a');
+        jsonLink.href = jsonContent;
+        jsonLink.download = `gaze_recording_${recordingSession.id}.json`;
+        jsonLink.click();
+        
+        showNotification('Recording data exported');
+      }
+
       // Run a single trial
       async function runTrial(trialNumber) {
         currentTrial = trialNumber;
@@ -407,6 +876,107 @@
         ui.exportContainer.style.display = 'none';
       }
 
+      // MODIFY EXISTING UI ELEMENTS AND ADD NEW ONES
+      document.addEventListener('DOMContentLoaded', () => {
+        // Add new buttons for the second pipeline
+        const controls = document.querySelector('.controls');
+        
+        // Add heatmap toggle button
+        const heatmapBtn = document.createElement('button');
+        heatmapBtn.id = 'heatmapBtn';
+        heatmapBtn.className = 'btn';
+        heatmapBtn.type = 'button';
+        heatmapBtn.textContent = 'Toggle Heatmap';
+        heatmapBtn.disabled = true;
+        controls.appendChild(heatmapBtn);
+        
+        // Add head calibration button
+        const headCalibBtn = document.createElement('button');
+        headCalibBtn.id = 'headCalibBtn';
+        headCalibBtn.className = 'btn';
+        headCalibBtn.type = 'button';
+        headCalibBtn.textContent = 'Calibrate Head Position';
+        headCalibBtn.disabled = true;
+        controls.appendChild(headCalibBtn);
+        
+        // Add recording button
+        const recordBtn = document.createElement('button');
+        recordBtn.id = 'recordBtn';
+        recordBtn.className = 'btn';
+        recordBtn.type = 'button';
+        recordBtn.textContent = 'Start Recording';
+        recordBtn.disabled = true;
+        controls.appendChild(recordBtn);
+        
+        // Update UI object with new elements
+        ui.heatmapBtn = heatmapBtn;
+        ui.headCalibBtn = headCalibBtn;
+        ui.recordBtn = recordBtn;
+        
+        // Add event listeners for new buttons
+        ui.heatmapBtn.addEventListener('click', toggleHeatmap);
+        
+        ui.headCalibBtn.addEventListener('click', async () => {
+          try {
+            const headCalibrationSuccess = await calibrateHeadPosition();
+            if (headCalibrationSuccess) {
+              ui.recordBtn.disabled = false;
+            }
+          } catch (error) {
+            showNotification(error.message, true);
+          }
+        });
+        
+        ui.recordBtn.addEventListener('click', async () => {
+          try {
+            if (isExperimentRunning) {
+              stopRecordingSession();
+              ui.recordBtn.textContent = 'Start Recording';
+            } else {
+              const recordingStarted = await startRecordingSession();
+              if (recordingStarted) {
+                ui.recordBtn.textContent = 'Stop Recording';
+                ui.heatmapBtn.disabled = false;
+              }
+            }
+          } catch (error) {
+            showNotification(error.message, true);
+          }
+        });
+        
+        // Modify existing event listeners
+        ui.startBtn.addEventListener('click', async () => {
+          try {
+            const webgazerInitialized = await initializeWebGazer();
+            const psychojsInitialized = initializePsychoJS();
+
+            if (webgazerInitialized && psychojsInitialized) {
+              ui.calibrateBtn.disabled = false;
+              ui.abortBtn.disabled = false;
+              ui.headCalibBtn.disabled = false;
+              showNotification('Experiment initialized successfully');
+            }
+          } catch (error) {
+            showNotification(error.message, true);
+          }
+        });
+        
+        // Add keyboard shortcuts
+        document.addEventListener('keydown', (e) => {
+          if (e.key === 'h' || e.key === 'H') {
+            if (!ui.heatmapBtn.disabled) {
+              toggleHeatmap();
+            }
+          } else if (e.key === 'Escape') {
+            if (isExperimentRunning) {
+              stopRecordingSession();
+              ui.recordBtn.textContent = 'Start Recording';
+              showNotification('Recording stopped with ESC key');
+            }
+          }
+        });
+      });
+
       // Event Handlers
       ui.startBtn.addEventListener('click', async () => {
         try {
@@ -416,6 +986,7 @@
           if (webgazerInitialized && psychojsInitialized) {
             ui.calibrateBtn.disabled = false;
             ui.abortBtn.disabled = false;
+            ui.headCalibBtn.disabled = false;
             showNotification('Experiment initialized successfully');
           }
         } catch (error) {
@@ -461,6 +1032,9 @@
       window.addEventListener('beforeunload', () => {
         if (webgazer) webgazer.end();
         if (psychoJS) psychoJS.quit();
+        if (recordingSession) {
+          stopRecordingSession();
+        }
       });
     </script>
   </body>
