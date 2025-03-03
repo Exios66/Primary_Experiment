@@ -5,8 +5,23 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Advanced Eye Tracking Experiment</title>
     
+    <!-- Define fallback function before scripts that might need it -->
+    <script>
+      // Fallback for loading PsychoJS locally
+      function loadLocalPsychoJS() {
+        console.warn("Loading PsychoJS from CDN failed, attempting to load local version...");
+        const script = document.createElement('script');
+        script.src = "psychojs.js"; // Local copy of psychojs.js
+        script.onerror = function() {
+          console.error("Failed to load local PsychoJS. Please make sure 'psychojs.js' exists in the same directory.");
+          alert("Failed to load PsychoJS. The experiment may not work correctly.");
+        };
+        document.head.appendChild(script);
+      }
+    </script>
+    
     <!-- Modern dependencies -->
-    <script src="https://unpkg.com/psychojs@2023.2.3/dist/psychojs.js"></script>
+    <script src="https://unpkg.com/psychojs@2023.2.3/dist/psychojs.js" onerror="loadLocalPsychoJS()"></script>
     <script src="webgazer.js"></script>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600&display=swap" rel="stylesheet">
     
@@ -539,13 +554,36 @@
       let currentRecordingTime = 0;
       let lastTrackingQuality = 1.0;
       let inactivityTimer = null;
+      // Advanced eye tracking state
+      let eyeMovementData = {
+        fixations: [],
+        saccades: [],
+        smoothPursuits: [],
+        blinks: []
+      };
+      let gazeMetrics = {};
+      let realTimeAnalysisEnabled = true;
+      let analysisUpdateInterval = null;
+      let lastAnalysisTime = 0;
+      let eyeMovementVisualization = {
+        showFixations: true,
+        showSaccades: false,
+        showPursuits: false,
+        fixationRadiusScale: 0.5   // Scale factor for fixation circles
+      };
       let sessionStats = {
         totalDuration: 0,
         activeDuration: 0,
         pauseDuration: 0,
         dataPoints: 0,
         avgTrackingQuality: 1.0,
-        segmentCount: 0
+        segmentCount: 0,
+        // New advanced metrics
+        fixationCount: 0,
+        avgFixationDuration: 0,
+        saccadeCount: 0,
+        blinkRate: 0,
+        pursuitCount: 0
       };
 
       // Configuration
@@ -582,6 +620,33 @@
         visualization: {
           timeWindow: 60, // Show last 60 seconds in visualizations by default
           heatmapTemporalDecay: 0.9 // Decay factor for older points
+        },
+        // Advanced eye tracking configuration
+        eyeTracking: {
+          realTimeAnalysisEnabled: true,
+          analysisInterval: 500, // ms between analysis updates
+          fixationSettings: {
+            minDuration: 100, // ms
+            dispersionThreshold: 35, // pixels
+            maximumGap: 75 // ms, maximum time between samples to be considered part of the same fixation
+          },
+          saccadeSettings: {
+            velocityThreshold: 300, // pixels/second
+            accelerationThreshold: 9500 // pixels/second²
+          },
+          blinkSettings: {
+            maxGapDuration: 400 // ms
+          },
+          pursuitSettings: {
+            velocityRange: [30, 150], // pixels/second
+            directionChangeMax: 45 // degrees
+          },
+          visualization: {
+            showFixations: true,
+            showSaccades: false,
+            showPursuits: false,
+            fixationRadiusScale: 0.5
+          }
         }
       };
 
@@ -599,6 +664,9 @@
       // Initialize WebGazer
       async function initializeWebGazer() {
         try {
+          ui.statusText.textContent = 'Initializing WebGazer...';
+          updateProgress(10);
+          
           await webgazer.setGazeListener((data, timestamp) => {
             if (data && isExperimentRunning) {
               gazeData.push({
@@ -608,16 +676,21 @@
                 trial: currentTrial
               });
             }
-            }).begin();
+          }).begin();
+          
+          updateProgress(50);
+          ui.statusText.textContent = 'WebGazer initialized successfully';
       
           // Configure WebGazer
-            webgazer.showVideo(false)
-                     .showFaceOverlay(false)
-                     .showFaceFeedbackBox(false)
-                     .showPredictionPoints(false);
+          webgazer.showVideo(false)
+                   .showFaceOverlay(false)
+                   .showFaceFeedbackBox(false)
+                   .showPredictionPoints(false);
 
+          updateProgress(75);
           return true;
         } catch (error) {
+          console.error("WebGazer initialization failed:", error);
           showNotification('Failed to initialize WebGazer: ' + error.message, true);
           return false;
         }
@@ -625,18 +698,32 @@
 
       // Initialize PsychoJS
       function initializePsychoJS() {
-        psychoJS = new PsychoJS({
-          debug: true
-        });
+        try {
+          // Check if PsychoJS is defined
+          if (typeof PsychoJS === 'undefined') {
+            console.error("PsychoJS is not defined. Make sure the library is loaded correctly.");
+            showNotification("PsychoJS library failed to load", true);
+            return false;
+          }
+          
+          psychoJS = new PsychoJS({
+            debug: true
+          });
 
-        experimentWindow = new psychoJS.visual.Window({
-          size: [window.innerWidth, window.innerHeight],
-          fullscr: config.fullscreen,
-          color: new psychoJS.Color(config.backgroundColor),
-          units: 'norm'
-        });
-
-        return true;
+          experimentWindow = new psychoJS.visual.Window({
+            size: [window.innerWidth, window.innerHeight],
+            fullscr: config.fullscreen,
+            color: new psychoJS.Color(config.backgroundColor),
+            units: 'norm'
+          });
+          
+          updateProgress(25); // Update progress to indicate successful initialization
+          return true;
+        } catch (error) {
+          console.error("Error initializing PsychoJS:", error);
+          showNotification("Failed to initialize PsychoJS: " + error.message, true);
+          return false;
+        }
       }
 
       // Calibration procedure
@@ -696,7 +783,898 @@
           updateProgress((i + 1) / points.length * 100);
         }
 
+        // Assess calibration quality
+        const calibrationQuality = assessCalibrationQuality(calibrationData);
+        if (calibrationQuality.score < 0.6) {
+          showNotification(`Calibration quality is low (${Math.round(calibrationQuality.score * 100)}%). Consider recalibrating.`, true);
+        } else {
+          showNotification(`Calibration quality: ${Math.round(calibrationQuality.score * 100)}%`);
+        }
+
         return calibrationData.length === points.length;
+      }
+
+      // Advanced calibration quality assessment
+      function assessCalibrationQuality(calibrationData) {
+        if (!calibrationData || calibrationData.length === 0) {
+          return { score: 0, details: "No calibration data available" };
+        }
+        
+        // Convert normalized coordinates to pixel coordinates for easier interpretation
+        const screenWidth = window.innerWidth;
+        const screenHeight = window.innerHeight;
+        
+        // Calculate error metrics for each calibration point
+        const pointErrors = calibrationData.map(point => {
+          // Convert normalized target coordinates to pixels
+          const targetX = ((point.target[0] + 1) / 2) * screenWidth;
+          const targetY = ((point.target[1] + 1) / 2) * screenHeight;
+          
+          // Measured coordinates are already in pixels
+          const measuredX = point.measured[0];
+          const measuredY = point.measured[1];
+          
+          // Calculate Euclidean distance error
+          const error = Math.sqrt(
+            Math.pow(targetX - measuredX, 2) + 
+            Math.pow(targetY - measuredY, 2)
+          );
+          
+          return {
+            target: [targetX, targetY],
+            measured: [measuredX, measuredY],
+            error: error
+          };
+        });
+        
+        // Calculate overall metrics
+        const totalError = pointErrors.reduce((sum, p) => sum + p.error, 0);
+        const avgError = totalError / pointErrors.length;
+        const maxError = Math.max(...pointErrors.map(p => p.error));
+        
+        // Calculate standard deviation of errors
+        const errorVariance = pointErrors.reduce((sum, p) => sum + Math.pow(p.error - avgError, 2), 0) / pointErrors.length;
+        const errorStdDev = Math.sqrt(errorVariance);
+        
+        // Calculate normalized quality score (0-1, higher is better)
+        // We'll use a sigmoid function to map average error to a quality score
+        // Typical screen diagonal is used as a reference for normalizing error
+        const screenDiagonal = Math.sqrt(Math.pow(screenWidth, 2) + Math.pow(screenHeight, 2));
+        const normalizedAvgError = avgError / (screenDiagonal * 0.1); // 10% of screen diagonal as reference
+        const qualityScore = 1 / (1 + Math.exp((normalizedAvgError - 1) * 5));
+        
+        return {
+          score: qualityScore,
+          avgError: avgError,
+          maxError: maxError,
+          stdDev: errorStdDev,
+          pointErrors: pointErrors,
+          uniformity: 1 - (errorStdDev / avgError) // Higher value means more uniform errors
+        };
+      }
+
+      // Advanced gaze data filtering
+      function filterGazeData(rawData, options = {}) {
+        if (!rawData || rawData.length === 0) return [];
+        
+        const defaults = {
+          outlierThreshold: 2.5, // Standard deviations for outlier detection
+          velocityThreshold: 1000, // pixels/second for saccade detection
+          medianFilterSize: 3, // Window size for median filter
+          smoothingFactor: 0.2, // For exponential smoothing (0-1)
+          jitterRadius: 10, // pixels, for jitter detection
+          minSampleDistance: 5, // Min distance between consecutive samples to keep
+          timeWindow: 100 // ms, time window for velocity calculation
+        };
+        
+        const settings = { ...defaults, ...options };
+        let filteredData = [...rawData];
+        
+        // Step 1: Remove missing or invalid values
+        filteredData = filteredData.filter(d => 
+          d && d.x !== undefined && !isNaN(d.x) && 
+          d.y !== undefined && !isNaN(d.y) && 
+          d.timestamp !== undefined
+        );
+        
+        if (filteredData.length === 0) return [];
+        
+        // Step 2: Outlier removal using Median Absolute Deviation (more robust than std dev)
+        if (filteredData.length > 5) {
+          // Calculate median positions
+          const xValues = filteredData.map(d => d.x);
+          const yValues = filteredData.map(d => d.y);
+          
+          const medianX = calculateMedian(xValues);
+          const medianY = calculateMedian(yValues);
+          
+          // Calculate deviations
+          const xDeviations = xValues.map(x => Math.abs(x - medianX));
+          const yDeviations = yValues.map(y => Math.abs(y - medianY));
+          
+          // Calculate MAD
+          const madX = calculateMedian(xDeviations);
+          const madY = calculateMedian(yDeviations);
+          
+          // Filter using MAD outlier detection (more robust than z-score)
+          filteredData = filteredData.filter((d, i) => {
+            const xDevScore = xDeviations[i] / (madX || 1); // Avoid division by zero
+            const yDevScore = yDeviations[i] / (madY || 1);
+            return xDevScore < settings.outlierThreshold && yDevScore < settings.outlierThreshold;
+          });
+        }
+        
+        // Step 3: Velocity-based filtering (for saccade detection)
+        if (filteredData.length > 2) {
+          const velocityFiltered = [];
+          
+          for (let i = 1; i < filteredData.length; i++) {
+            const current = filteredData[i];
+            const prev = filteredData[i-1];
+            
+            // Calculate time difference in seconds
+            const dt = (current.timestamp - prev.timestamp) / 1000;
+            
+            // Skip if time difference is too small or zero to avoid division by zero
+            if (dt <= 0.001) {
+              velocityFiltered.push(current);
+              continue;
+            }
+            
+            // Calculate velocity in pixels per second
+            const dx = current.x - prev.x;
+            const dy = current.y - prev.y;
+            const distance = Math.sqrt(dx*dx + dy*dy);
+            const velocity = distance / dt;
+            
+            // Add velocity information to the data point
+            current.velocity = velocity;
+            
+            // Keep points with velocity below threshold (not a saccade)
+            if (velocity < settings.velocityThreshold) {
+              velocityFiltered.push(current);
+            }
+          }
+          
+          filteredData = velocityFiltered;
+        }
+        
+        // Step 4: Apply exponential smoothing
+        if (filteredData.length > 1) {
+          const smoothed = [filteredData[0]]; // Keep first point unchanged
+          
+          for (let i = 1; i < filteredData.length; i++) {
+            const current = { ...filteredData[i] };
+            const prev = smoothed[i-1];
+            
+            // Apply exponential smoothing formula: y_smooth = α * y_current + (1-α) * y_prev
+            current.x = settings.smoothingFactor * current.x + (1 - settings.smoothingFactor) * prev.x;
+            current.y = settings.smoothingFactor * current.y + (1 - settings.smoothingFactor) * prev.y;
+            
+            smoothed.push(current);
+          }
+          
+          filteredData = smoothed;
+        }
+        
+        // Step 5: Add derived metrics for analysis
+        for (let i = 1; i < filteredData.length; i++) {
+          const current = filteredData[i];
+          const prev = filteredData[i-1];
+          
+          // Calculate gaze displacement
+          const dx = current.x - prev.x;
+          const dy = current.y - prev.y;
+          const displacement = Math.sqrt(dx*dx + dy*dy);
+          
+          // Time difference in ms
+          const timeDiff = current.timestamp - prev.timestamp;
+          
+          // Add derived metrics
+          current.displacement = displacement;
+          current.timeDelta = timeDiff;
+          current.velocity = current.velocity || (timeDiff > 0 ? (displacement / timeDiff) * 1000 : 0);
+        }
+        
+        return filteredData;
+      }
+
+      // Helper function to calculate median
+      function calculateMedian(values) {
+        if (!values || values.length === 0) return 0;
+        
+        const sorted = [...values].sort((a, b) => a - b);
+        const mid = Math.floor(sorted.length / 2);
+        
+        if (sorted.length % 2 === 0) {
+          return (sorted[mid - 1] + sorted[mid]) / 2;
+        } else {
+          return sorted[mid];
+        }
+      }
+
+      // Advanced eye movement detection and classification
+      function detectEyeMovements(gazeData, options = {}) {
+        if (!gazeData || gazeData.length < 3) {
+          return { fixations: [], saccades: [], smoothPursuits: [], blinks: [] };
+        }
+        
+        // Default parameters for eye movement detection
+        const defaults = {
+          fixationMinDuration: 100, // ms
+          fixationDispersionThreshold: 30, // pixels
+          saccadeVelocityThreshold: 300, // pixels/second
+          blinkDetectionEnabled: true,
+          pursuitDetectionEnabled: true,
+          pursuitVelocityRange: [30, 150], // pixels/second
+          pursuitDirectionChangeMax: 45, // degrees
+          blinkMaxGapDuration: 400 // ms
+        };
+        
+        const settings = { ...defaults, ...options };
+        
+        // Filter and prepare the data
+        const data = filterGazeData(gazeData, {
+          outlierThreshold: 3.0,
+          smoothingFactor: 0.1
+        });
+        
+        if (data.length < 3) {
+          return { fixations: [], saccades: [], smoothPursuits: [], blinks: [] };
+        }
+        
+        // 1. Identify blinks (data gaps)
+        const blinks = [];
+        const nonBlinkData = [];
+        let lastTimestamp = data[0].timestamp;
+        
+        // First detect blinks (missing data or large gaps)
+        if (settings.blinkDetectionEnabled) {
+          for (let i = 0; i < data.length; i++) {
+            const point = data[i];
+            
+            // Check for missing data points indicating potential blinks
+            if (i > 0) {
+              const gap = point.timestamp - lastTimestamp;
+              
+              // Large gap could indicate a blink
+              if (gap > settings.blinkMaxGapDuration) {
+                blinks.push({
+                  startTime: lastTimestamp,
+                  endTime: point.timestamp,
+                  duration: gap
+                });
+                
+                // Skip this point from further analysis
+                lastTimestamp = point.timestamp;
+                continue;
+              }
+            }
+            
+            lastTimestamp = point.timestamp;
+            nonBlinkData.push(point);
+          }
+        } else {
+          // If blink detection disabled, use all data
+          nonBlinkData.push(...data);
+        }
+        
+        // 2. Algorithm: Velocity-Based Detection with Adaptive Thresholds
+        const events = [];
+        const velocities = nonBlinkData.map(d => d.velocity || 0);
+        
+        // Calculate stats for adaptive thresholding
+        const medianVelocity = calculateMedian(velocities);
+        const highVelocities = velocities.filter(v => v > medianVelocity);
+        const lowVelocities = velocities.filter(v => v <= medianVelocity);
+        
+        // Adaptive thresholds based on data
+        const adaptiveSaccadeThreshold = settings.saccadeVelocityThreshold;
+        const adaptiveFixationThreshold = Math.min(
+          settings.fixationDispersionThreshold,
+          calculateMedian(lowVelocities) * 3
+        );
+        
+        // Analyze data points
+        let currentEvent = {
+          type: 'unknown',
+          startIndex: 0,
+          points: [nonBlinkData[0]],
+          velocities: [nonBlinkData[0].velocity || 0]
+        };
+        
+        for (let i = 1; i < nonBlinkData.length; i++) {
+          const point = nonBlinkData[i];
+          const velocity = point.velocity || 0;
+          
+          // Decision logic for event classification
+          if (velocity > adaptiveSaccadeThreshold) {
+            // High velocity indicates a saccade
+            if (currentEvent.type !== 'saccade') {
+              // End the previous event and start a new saccade
+              if (currentEvent.points.length > 0) {
+                finishEvent(currentEvent);
+                events.push(currentEvent);
+              }
+              
+              currentEvent = {
+                type: 'saccade',
+                startIndex: i,
+                points: [point],
+                velocities: [velocity]
+              };
+            } else {
+              // Continue the current saccade
+              currentEvent.points.push(point);
+              currentEvent.velocities.push(velocity);
+            }
+          } else if (velocity < adaptiveFixationThreshold) {
+            // Low velocity indicates a fixation
+            
+            // Check spatial dispersion for fixation
+            let isWithinFixationThreshold = true;
+            if (currentEvent.type === 'fixation' && currentEvent.points.length > 0) {
+              const centroidX = currentEvent.centroidX;
+              const centroidY = currentEvent.centroidY;
+              const distance = Math.sqrt(
+                Math.pow(point.x - centroidX, 2) +
+                Math.pow(point.y - centroidY, 2)
+              );
+              
+              isWithinFixationThreshold = distance < settings.fixationDispersionThreshold;
+            }
+            
+            if (currentEvent.type !== 'fixation' || !isWithinFixationThreshold) {
+              // End the previous event and start a new fixation
+              if (currentEvent.points.length > 0) {
+                finishEvent(currentEvent);
+                events.push(currentEvent);
+              }
+              
+              // Initialize centroid with first point
+              currentEvent = {
+                type: 'fixation',
+                startIndex: i,
+                points: [point],
+                velocities: [velocity],
+                centroidX: point.x,
+                centroidY: point.y
+              };
+            } else {
+              // Update the current fixation
+              currentEvent.points.push(point);
+              currentEvent.velocities.push(velocity);
+              
+              // Recalculate centroid with new point
+              const n = currentEvent.points.length;
+              currentEvent.centroidX = (currentEvent.centroidX * (n-1) + point.x) / n;
+              currentEvent.centroidY = (currentEvent.centroidY * (n-1) + point.y) / n;
+            }
+          } else {
+            // Medium velocity could be smooth pursuit
+            if (settings.pursuitDetectionEnabled) {
+              // Check if velocity is in pursuit range
+              const isPursuit = velocity >= settings.pursuitVelocityRange[0] && 
+                              velocity <= settings.pursuitVelocityRange[1];
+              
+              // Check direction consistency for pursuit
+              let isDirectionConsistent = true;
+              if (currentEvent.type === 'smooth_pursuit' && currentEvent.points.length > 1) {
+                const prevPoint = currentEvent.points[currentEvent.points.length - 1];
+                const prevPrevPoint = currentEvent.points[currentEvent.points.length - 2];
+                
+                // Calculate direction vectors
+                const dir1 = {
+                  x: prevPoint.x - prevPrevPoint.x,
+                  y: prevPoint.y - prevPrevPoint.y
+                };
+                
+                const dir2 = {
+                  x: point.x - prevPoint.x,
+                  y: point.y - prevPoint.y
+                };
+                
+                // Calculate angle between vectors
+                const dot = dir1.x * dir2.x + dir1.y * dir2.y;
+                const mag1 = Math.sqrt(dir1.x * dir1.x + dir1.y * dir1.y);
+                const mag2 = Math.sqrt(dir2.x * dir2.x + dir2.y * dir2.y);
+                
+                if (mag1 > 0 && mag2 > 0) {
+                  const cosAngle = dot / (mag1 * mag2);
+                  const angleRad = Math.acos(Math.min(Math.max(cosAngle, -1), 1));
+                  const angleDeg = angleRad * (180 / Math.PI);
+                  
+                  isDirectionConsistent = angleDeg < settings.pursuitDirectionChangeMax;
+                }
+              }
+              
+              if (isPursuit && (currentEvent.type === 'smooth_pursuit' && isDirectionConsistent)) {
+                // Continue the current smooth pursuit
+                currentEvent.points.push(point);
+                currentEvent.velocities.push(velocity);
+              } else if (isPursuit) {
+                // End the previous event and start a new smooth pursuit
+                if (currentEvent.points.length > 0) {
+                  finishEvent(currentEvent);
+                  events.push(currentEvent);
+                }
+                
+                currentEvent = {
+                  type: 'smooth_pursuit',
+                  startIndex: i,
+                  points: [point],
+                  velocities: [velocity]
+                };
+              } else {
+                // Not a pursuit, treat as saccade or fixation based on velocity
+                if (currentEvent.points.length > 0) {
+                  finishEvent(currentEvent);
+                  events.push(currentEvent);
+                }
+                
+                // Default to fixation if in doubt
+                currentEvent = {
+                  type: 'fixation',
+                  startIndex: i,
+                  points: [point],
+                  velocities: [velocity],
+                  centroidX: point.x,
+                  centroidY: point.y
+                };
+              }
+            } else {
+              // If pursuit detection disabled, classify as fixation
+              if (currentEvent.type !== 'fixation') {
+                // End the previous event and start a new fixation
+                if (currentEvent.points.length > 0) {
+                  finishEvent(currentEvent);
+                  events.push(currentEvent);
+                }
+                
+                currentEvent = {
+                  type: 'fixation',
+                  startIndex: i,
+                  points: [point],
+                  velocities: [velocity],
+                  centroidX: point.x,
+                  centroidY: point.y
+                };
+              } else {
+                // Update the current fixation
+                currentEvent.points.push(point);
+                currentEvent.velocities.push(velocity);
+                
+                // Recalculate centroid
+                const n = currentEvent.points.length;
+                currentEvent.centroidX = (currentEvent.centroidX * (n-1) + point.x) / n;
+                currentEvent.centroidY = (currentEvent.centroidY * (n-1) + point.y) / n;
+              }
+            }
+          }
+        }
+        
+        // Add the final event
+        if (currentEvent.points.length > 0) {
+          finishEvent(currentEvent);
+          events.push(currentEvent);
+        }
+        
+        // Extract events by type
+        const fixations = events
+          .filter(e => e.type === 'fixation' && e.duration >= settings.fixationMinDuration)
+          .map(processFurtherFixation);
+          
+        const saccades = events
+          .filter(e => e.type === 'saccade')
+          .map(processFurtherSaccade);
+          
+        const smoothPursuits = events
+          .filter(e => e.type === 'smooth_pursuit')
+          .map(processFurtherPursuit);
+        
+        return {
+          fixations,
+          saccades,
+          smoothPursuits,
+          blinks
+        };
+        
+        // Helper to finish processing an event
+        function finishEvent(event) {
+          if (event.points.length < 2) return;
+          
+          const startTime = event.points[0].timestamp;
+          const endTime = event.points[event.points.length - 1].timestamp;
+          
+          event.startTime = startTime;
+          event.endTime = endTime;
+          event.duration = endTime - startTime;
+          
+          // Calculate average velocity
+          event.avgVelocity = event.velocities.reduce((sum, v) => sum + v, 0) / event.velocities.length;
+          
+          // For fixations, refine centroid and calculate dispersion
+          if (event.type === 'fixation') {
+            // Calculate all x and y coordinates
+            const xValues = event.points.map(p => p.x);
+            const yValues = event.points.map(p => p.y);
+            
+            // Calculate dispersion as max distance from center
+            const dispX = Math.max(...xValues) - Math.min(...xValues);
+            const dispY = Math.max(...yValues) - Math.min(...yValues);
+            event.dispersion = Math.max(dispX, dispY);
+            
+            // Store the positions for this fixation
+            event.x = event.centroidX;
+            event.y = event.centroidY;
+          }
+          
+          // For saccades, calculate amplitude and direction
+          if (event.type === 'saccade') {
+            const startX = event.points[0].x;
+            const startY = event.points[0].y;
+            const endX = event.points[event.points.length - 1].x;
+            const endY = event.points[event.points.length - 1].y;
+            
+            event.startX = startX;
+            event.startY = startY;
+            event.endX = endX;
+            event.endY = endY;
+            
+            // Calculate amplitude (distance)
+            event.amplitude = Math.sqrt(
+              Math.pow(endX - startX, 2) + 
+              Math.pow(endY - startY, 2)
+            );
+            
+            // Calculate direction in degrees (0=right, 90=up, 180=left, 270=down)
+            event.direction = (Math.atan2(endY - startY, endX - startX) * 180 / Math.PI + 360) % 360;
+            
+            // Peak velocity
+            event.peakVelocity = Math.max(...event.velocities);
+          }
+          
+          // For smooth pursuits, calculate path and direction
+          if (event.type === 'smooth_pursuit') {
+            const startX = event.points[0].x;
+            const startY = event.points[0].y;
+            const endX = event.points[event.points.length - 1].x;
+            const endY = event.points[event.points.length - 1].y;
+            
+            event.startX = startX;
+            event.startY = startY;
+            event.endX = endX;
+            event.endY = endY;
+            
+            // Calculate path length (sum of all point-to-point distances)
+            let pathLength = 0;
+            for (let i = 1; i < event.points.length; i++) {
+              const dx = event.points[i].x - event.points[i-1].x;
+              const dy = event.points[i].y - event.points[i-1].y;
+              pathLength += Math.sqrt(dx*dx + dy*dy);
+            }
+            event.pathLength = pathLength;
+            
+            // Calculate straightness (direct distance / path length)
+            const directDistance = Math.sqrt(
+              Math.pow(endX - startX, 2) + 
+              Math.pow(endY - startY, 2)
+            );
+            event.straightness = directDistance / (pathLength || 1); // Avoid division by zero
+            
+            // Average direction
+            event.direction = (Math.atan2(endY - startY, endX - startX) * 180 / Math.PI + 360) % 360;
+          }
+        }
+        
+        // Further processing for fixations
+        function processFurtherFixation(fixation) {
+          // Add additional metrics for fixations
+          
+          // Calculate temporal precision (stability over time)
+          const timePoints = fixation.points.map(p => p.timestamp);
+          const timeDiffs = [];
+          for (let i = 1; i < timePoints.length; i++) {
+            timeDiffs.push(timePoints[i] - timePoints[i-1]);
+          }
+          
+          fixation.temporalPrecision = timeDiffs.length > 0 ? 
+            calculateMedian(timeDiffs) : 0;
+          
+          return fixation;
+        }
+        
+        // Further processing for saccades
+        function processFurtherSaccade(saccade) {
+          // Additional metrics for saccades
+          
+          // Calculate main sequence relationship (peak velocity / amplitude)
+          saccade.mainSequence = saccade.peakVelocity / (saccade.amplitude || 1);
+          
+          // Calculate acceleration phase
+          const halfIdx = Math.floor(saccade.velocities.length / 2);
+          saccade.accelerationPhase = saccade.velocities.slice(0, halfIdx);
+          saccade.decelerationPhase = saccade.velocities.slice(halfIdx);
+          
+          return saccade;
+        }
+        
+        // Further processing for smooth pursuits
+        function processFurtherPursuit(pursuit) {
+          // Additional metrics for smooth pursuits
+          
+          // Calculate velocity stability (standard deviation of velocity)
+          const velocityMean = pursuit.avgVelocity;
+          const velocityVariance = pursuit.velocities.reduce(
+            (sum, v) => sum + Math.pow(v - velocityMean, 2), 0
+          ) / pursuit.velocities.length;
+          
+          pursuit.velocityStability = Math.sqrt(velocityVariance) / velocityMean;
+          
+          return pursuit;
+        }
+      }
+
+      // Enhanced gaze analysis functions
+      function analyzeGaze(gazeData, options = {}) {
+        if (!gazeData || gazeData.length < 3) {
+          return { success: false, message: "Insufficient gaze data for analysis" };
+        }
+        
+        // Detect eye movements
+        const eyeMovements = detectEyeMovements(gazeData, options);
+        
+        // Extract fixations and saccades
+        const { fixations, saccades, smoothPursuits, blinks } = eyeMovements;
+        
+        // Screen dimensions
+        const screenWidth = window.innerWidth;
+        const screenHeight = window.innerHeight;
+        
+        // Aggregated metrics
+        const metrics = {
+          // Basic count stats
+          totalSamples: gazeData.length,
+          trackingRate: calculateTrackingRate(gazeData),
+          
+          // Fixation metrics
+          fixationCount: fixations.length,
+          averageFixationDuration: fixations.length > 0 ? 
+            fixations.reduce((sum, f) => sum + f.duration, 0) / fixations.length : 0,
+          totalFixationTime: fixations.reduce((sum, f) => sum + f.duration, 0),
+          
+          // Saccade metrics
+          saccadeCount: saccades.length,
+          averageSaccadeAmplitude: saccades.length > 0 ?
+            saccades.reduce((sum, s) => sum + s.amplitude, 0) / saccades.length : 0,
+          averageSaccadeVelocity: saccades.length > 0 ?
+            saccades.reduce((sum, s) => sum + s.avgVelocity, 0) / saccades.length : 0,
+          
+          // Pursuit metrics
+          pursuitCount: smoothPursuits.length,
+          averagePursuitDuration: smoothPursuits.length > 0 ?
+            smoothPursuits.reduce((sum, p) => sum + p.duration, 0) / smoothPursuits.length : 0,
+          
+          // Blink metrics
+          blinkCount: blinks.length,
+          blinkRate: blinks.length / (gazeData[gazeData.length - 1].timestamp - gazeData[0].timestamp) * 60000, // blinks per minute
+          
+          // Coverage metrics
+          spatialDensity: calculateSpatialDensity(fixations, screenWidth, screenHeight),
+          
+          // Define regions of interest (example: divide screen into 9 regions)
+          regionAnalysis: analyzeRegionsOfInterest(fixations, {
+            regions: defineRegions(screenWidth, screenHeight)
+          }),
+          
+          // Scanpath metrics
+          scanpathLength: calculateScanpathLength(fixations),
+          scanpathArea: calculateConvexHullArea(fixations),
+          
+          // Transitional metrics
+          transitionMatrix: calculateTransitionMatrix(fixations, {
+            regions: defineRegions(screenWidth, screenHeight)
+          })
+        };
+        
+        return {
+          success: true,
+          metrics,
+          eyeMovements,
+          regions: defineRegions(screenWidth, screenHeight)
+        };
+        
+        // Helper function to calculate tracking rate
+        function calculateTrackingRate(data) {
+          if (data.length < 2) return 0;
+          
+          const duration = data[data.length - 1].timestamp - data[0].timestamp;
+          return (data.length / duration) * 1000; // samples per second
+        }
+        
+        // Helper function to define regions of interest
+        function defineRegions(width, height, rows = 3, cols = 3) {
+          const regions = [];
+          const cellWidth = width / cols;
+          const cellHeight = height / rows;
+          
+          for (let row = 0; row < rows; row++) {
+            for (let col = 0; col < cols; col++) {
+              regions.push({
+                id: row * cols + col,
+                name: `R${row * cols + col + 1}`,
+                x: col * cellWidth,
+                y: row * cellHeight,
+                width: cellWidth,
+                height: cellHeight
+              });
+            }
+          }
+          
+          return regions;
+        }
+        
+        // Helper function to analyze fixations in regions of interest
+        function analyzeRegionsOfInterest(fixations, { regions }) {
+          // Count fixations in each region
+          const regionCounts = Array(regions.length).fill(0);
+          const regionDurations = Array(regions.length).fill(0);
+          
+          fixations.forEach(fixation => {
+            const regionIndex = getRegionIndex(fixation.x, fixation.y, regions);
+            if (regionIndex >= 0) {
+              regionCounts[regionIndex]++;
+              regionDurations[regionIndex] += fixation.duration;
+            }
+          });
+          
+          // Calculate aggregated metrics for each region
+          return regions.map((region, index) => ({
+            regionId: region.id,
+            regionName: region.name,
+            fixationCount: regionCounts[index],
+            fixationPercentage: fixations.length > 0 ? 
+              (regionCounts[index] / fixations.length) * 100 : 0,
+            totalFixationTime: regionDurations[index],
+            fixationTimePercentage: regionDurations.reduce((sum, d) => sum + d, 0) > 0 ?
+              (regionDurations[index] / regionDurations.reduce((sum, d) => sum + d, 0)) * 100 : 0
+          }));
+        }
+        
+        // Helper function to get region index for a point
+        function getRegionIndex(x, y, regions) {
+          for (let i = 0; i < regions.length; i++) {
+            const region = regions[i];
+            if (x >= region.x && x < region.x + region.width &&
+                y >= region.y && y < region.y + region.height) {
+              return i;
+            }
+          }
+          return -1; // Point is outside all regions
+        }
+        
+        // Helper function to calculate spatial density
+        function calculateSpatialDensity(fixations, screenWidth, screenHeight) {
+          if (fixations.length === 0) return 0;
+          
+          // Create a grid over the screen
+          const gridSize = 10; // 10x10 grid
+          const cellWidth = screenWidth / gridSize;
+          const cellHeight = screenHeight / gridSize;
+          
+          // Count occupied cells
+          const occupiedCells = new Set();
+          
+          fixations.forEach(fixation => {
+            const gridX = Math.floor(fixation.x / cellWidth);
+            const gridY = Math.floor(fixation.y / cellHeight);
+            occupiedCells.add(`${gridX},${gridY}`);
+          });
+          
+          // Return percentage of grid cells that received at least one fixation
+          return (occupiedCells.size / (gridSize * gridSize)) * 100;
+        }
+        
+        // Helper function to calculate scanpath length
+        function calculateScanpathLength(fixations) {
+          if (fixations.length < 2) return 0;
+          
+          let length = 0;
+          for (let i = 1; i < fixations.length; i++) {
+            const dx = fixations[i].x - fixations[i-1].x;
+            const dy = fixations[i].y - fixations[i-1].y;
+            length += Math.sqrt(dx*dx + dy*dy);
+          }
+          
+          return length;
+        }
+        
+        // Helper function to calculate convex hull area of fixations
+        function calculateConvexHullArea(fixations) {
+          if (fixations.length < 3) return 0;
+          
+          // Extract points
+          const points = fixations.map(f => ({ x: f.x, y: f.y }));
+          
+          // Compute convex hull (Gift wrapping algorithm)
+          const hull = computeConvexHull(points);
+          
+          // Calculate area of polygon
+          return calculatePolygonArea(hull);
+          
+          // Gift wrapping algorithm for convex hull
+          function computeConvexHull(points) {
+            if (points.length < 3) return points;
+            
+            // Find leftmost point
+            let leftmost = 0;
+            for (let i = 1; i < points.length; i++) {
+              if (points[i].x < points[leftmost].x) {
+                leftmost = i;
+              }
+            }
+            
+            const hull = [];
+            let p = leftmost;
+            
+            do {
+              hull.push(points[p]);
+              
+              let q = (p + 1) % points.length;
+              for (let i = 0; i < points.length; i++) {
+                if (orientation(points[p], points[i], points[q]) === 2) {
+                  q = i;
+                }
+              }
+              
+              p = q;
+            } while (p !== leftmost);
+            
+            return hull;
+          }
+          
+          // Calculate orientation of triplet (p, q, r)
+          function orientation(p, q, r) {
+            const val = (q.y - p.y) * (r.x - q.x) - (q.x - p.x) * (r.y - q.y);
+            if (val === 0) return 0; // collinear
+            return (val > 0) ? 1 : 2; // clockwise or counterclockwise
+          }
+          
+          // Calculate area of polygon using Shoelace formula
+          function calculatePolygonArea(vertices) {
+            let area = 0;
+            const n = vertices.length;
+            
+            for (let i = 0; i < n; i++) {
+              const j = (i + 1) % n;
+              area += vertices[i].x * vertices[j].y;
+              area -= vertices[j].x * vertices[i].y;
+            }
+            
+            return Math.abs(area) / 2;
+          }
+        }
+        
+        // Helper function to calculate transition matrix between regions
+        function calculateTransitionMatrix(fixations, { regions }) {
+          if (fixations.length < 2) return [];
+          
+          // Initialize transition matrix with zeros
+          const n = regions.length;
+          const matrix = Array(n).fill().map(() => Array(n).fill(0));
+          
+          // Count transitions between regions
+          for (let i = 1; i < fixations.length; i++) {
+            const fromRegion = getRegionIndex(fixations[i-1].x, fixations[i-1].y, regions);
+            const toRegion = getRegionIndex(fixations[i].x, fixations[i].y, regions);
+            
+            if (fromRegion >= 0 && toRegion >= 0) {
+              matrix[fromRegion][toRegion]++;
+            }
+          }
+          
+          return matrix;
+        }
       }
 
       // Initialize coordinate plane for screen
@@ -1019,13 +1997,22 @@
         
         // Initialize recording components
         gazeHistory = [];
+        // Reset eye movement data for new recording
+        eyeMovementData = {
+          fixations: [],
+          saccades: [],
+          smoothPursuits: [],
+          blinks: []
+        };
+        gazeMetrics = {};
         recordingStartTime = Date.now();
+        lastAnalysisTime = recordingStartTime;
         
         // Initialize coordinate plane and heatmap
         initCoordinatePlane();
         initHeatmap();
         
-        // Create recording session object
+        // Create recording session object with enhanced eye tracking data structures
         recordingSession = {
           id: `session_${Date.now()}`,
           startTime: recordingStartTime,
@@ -1034,12 +2021,25 @@
           screenDimensions: {
             width: window.innerWidth,
             height: window.innerHeight
-          }
+          },
+          // Advanced eye tracking data
+          eyeMovements: {
+            fixations: [],
+            saccades: [],
+            smoothPursuits: [],
+            blinks: []
+          },
+          analytics: {}
         };
         
         // Start recording loop
         ui.statusText.textContent = 'Recording in progress...';
         isExperimentRunning = true;
+        
+        // Start real-time analysis if enabled
+        if (config.eyeTracking.realTimeAnalysisEnabled) {
+          startRealTimeAnalysis();
+        }
         
         const recordingLoop = async () => {
           if (!isExperimentRunning) return;
@@ -1050,34 +2050,55 @@
           // Get current gaze prediction
           const prediction = await webgazer.getCurrentPrediction();
           if (prediction) {
+            const timestamp = Date.now();
+            
             // Add to history for heatmap
             gazeHistory.push({
               x: prediction.x,
               y: prediction.y,
-              timestamp: Date.now() - recordingStartTime
+              timestamp: timestamp - recordingStartTime
             });
             
-            // Add to recording data
-            recordingSession.frames.push({
-              timestamp: Date.now() - recordingStartTime,
+            // Get additional data for advanced analysis
+            const headPosition = await webgazer.getCurrentFaceFeatures();
+            const trackingQuality = calculateTrackingQuality(headPosition);
+            
+            // Enhanced frame data
+            const enhancedFrame = {
+              timestamp: timestamp - recordingStartTime,
               gazeX: prediction.x,
               gazeY: prediction.y,
-              headPosition: await webgazer.getCurrentFaceFeatures()
-            });
+              headPosition: headPosition,
+              trackingQuality: trackingQuality,
+              // Add pupil data if available from WebGazer
+              pupilData: headPosition?.pupil || null
+            };
             
-            // Draw current gaze point
-            drawGazePoint(prediction.x, prediction.y);
+            // Add to recording data
+            recordingSession.frames.push(enhancedFrame);
+            
+            // Draw gaze point with quality indicator
+            drawGazePoint(prediction.x, prediction.y, trackingQuality);
             
             // Update heatmap if enabled
             if (heatmapEnabled) {
-              updateHeatmap();
+              enhancedUpdateHeatmap();
+            }
+            
+            // Visualize eye movements if we have data and visualization is enabled
+            if (eyeMovementData.fixations.length > 0) {
+              visualizeEyeMovements();
             }
           }
           
           // Check if recording duration has been reached
           if (elapsedTime >= config.recordingDuration) {
             stopRecordingSession();
-            showNotification('Recording completed');
+            
+            // Perform final comprehensive analysis
+            performFinalAnalysis();
+            
+            showNotification('Recording completed with advanced eye tracking analysis');
             ui.exportContainer.style.display = 'flex';
           } else {
             // Continue loop
@@ -1089,6 +2110,415 @@
         recordingLoop();
         
         return true;
+      }
+      
+      // Real-time eye movement analysis
+      function startRealTimeAnalysis() {
+        if (analysisUpdateInterval) {
+          clearInterval(analysisUpdateInterval);
+        }
+        
+        analysisUpdateInterval = setInterval(() => {
+          if (!isExperimentRunning || isPaused) return;
+          
+          const now = Date.now();
+          // Only analyze data collected since the last analysis
+          const recentFrames = recordingSession.frames.filter(
+            frame => frame.timestamp > (lastAnalysisTime - recordingStartTime)
+          );
+          
+          if (recentFrames.length >= 10) { // Need minimum data for analysis
+            // Format data for analysis
+            const analysisData = recentFrames.map(frame => ({
+              x: frame.gazeX,
+              y: frame.gazeY,
+              timestamp: frame.timestamp
+            }));
+            
+            // Detect eye movements using our advanced detection algorithm
+            const newMovements = detectEyeMovements(analysisData, {
+              fixationMinDuration: config.eyeTracking.fixationSettings.minDuration,
+              fixationDispersionThreshold: config.eyeTracking.fixationSettings.dispersionThreshold,
+              saccadeVelocityThreshold: config.eyeTracking.saccadeSettings.velocityThreshold,
+              blinkMaxGapDuration: config.eyeTracking.blinkSettings.maxGapDuration,
+              pursuitVelocityRange: config.eyeTracking.pursuitSettings.velocityRange,
+              pursuitDirectionChangeMax: config.eyeTracking.pursuitSettings.directionChangeMax
+            });
+            
+            // Add to our session data with timestamp adjustment
+            newMovements.fixations.forEach(fixation => {
+              // Adjust timestamps from relative to absolute
+              fixation.startTime += recordingStartTime;
+              fixation.endTime += recordingStartTime;
+              eyeMovementData.fixations.push(fixation);
+              recordingSession.eyeMovements.fixations.push(fixation);
+            });
+            
+            newMovements.saccades.forEach(saccade => {
+              saccade.startTime += recordingStartTime;
+              saccade.endTime += recordingStartTime;
+              eyeMovementData.saccades.push(saccade);
+              recordingSession.eyeMovements.saccades.push(saccade);
+            });
+            
+            newMovements.smoothPursuits.forEach(pursuit => {
+              pursuit.startTime += recordingStartTime;
+              pursuit.endTime += recordingStartTime;
+              eyeMovementData.smoothPursuits.push(pursuit);
+              recordingSession.eyeMovements.smoothPursuits.push(pursuit);
+            });
+            
+            newMovements.blinks.forEach(blink => {
+              blink.startTime += recordingStartTime;
+              blink.endTime += recordingStartTime;
+              eyeMovementData.blinks.push(blink);
+              recordingSession.eyeMovements.blinks.push(blink);
+            });
+            
+            // Update statistics and visualizations
+            updateEyeMovementStats();
+            
+            lastAnalysisTime = now;
+          }
+        }, config.eyeTracking.analysisInterval);
+      }
+      
+      // Update eye movement statistics
+      function updateEyeMovementStats() {
+        // Update session stats with eye movement metrics
+        sessionStats.fixationCount = eyeMovementData.fixations.length;
+        sessionStats.saccadeCount = eyeMovementData.saccades.length;
+        sessionStats.pursuitCount = eyeMovementData.smoothPursuits.length;
+        
+        if (eyeMovementData.fixations.length > 0) {
+          sessionStats.avgFixationDuration = eyeMovementData.fixations.reduce(
+            (sum, f) => sum + f.duration, 0) / eyeMovementData.fixations.length;
+        }
+        
+        if (eyeMovementData.blinks.length > 0 && recordingSession.frames.length > 0) {
+          const recordingDuration = (recordingSession.frames[recordingSession.frames.length - 1].timestamp) / 1000; // in seconds
+          if (recordingDuration > 0) {
+            sessionStats.blinkRate = (eyeMovementData.blinks.length / recordingDuration) * 60; // blinks per minute
+          }
+        }
+      }
+      
+      // Final comprehensive analysis of eye movement data
+      function performFinalAnalysis() {
+        if (!recordingSession || recordingSession.frames.length === 0) return;
+        
+        // Format data for final analysis
+        const analysisData = recordingSession.frames.map(frame => ({
+          x: frame.gazeX,
+          y: frame.gazeY,
+          timestamp: frame.timestamp
+        }));
+        
+        // Perform comprehensive analysis
+        const analysisResult = analyzeGaze(analysisData);
+        
+        if (analysisResult.success) {
+          recordingSession.analytics = analysisResult.metrics;
+          gazeMetrics = analysisResult.metrics;
+          
+          console.log('Gaze Analysis Results:', {
+            fixationCount: gazeMetrics.fixationCount,
+            avgFixationDuration: Math.round(gazeMetrics.averageFixationDuration) + 'ms',
+            saccadeCount: gazeMetrics.saccadeCount,
+            blinkRate: gazeMetrics.blinkRate.toFixed(1) + '/min',
+            spatialDensity: gazeMetrics.spatialDensity.toFixed(2) + '%'
+          });
+        }
+      }
+      
+      // Visualize eye movements
+      function visualizeEyeMovements() {
+        // Remove existing visualizations
+        const existingVisuals = document.querySelectorAll('.eye-movement-visual');
+        existingVisuals.forEach(el => el.remove());
+        
+        // Only proceed if visualization is enabled
+        if (!config.eyeTracking.visualization.showFixations && 
+            !config.eyeTracking.visualization.showSaccades && 
+            !config.eyeTracking.visualization.showPursuits) {
+          return;
+        }
+        
+        // Get the most recent data for visualization
+        const now = Date.now();
+        // Only show eye movements from the last 5 seconds
+        const timeWindow = 5000; // 5 seconds
+        
+        if (config.eyeTracking.visualization.showFixations) {
+          // Show recent fixations
+          const recentFixations = eyeMovementData.fixations.filter(
+            f => f.endTime >= (now - timeWindow)
+          );
+          
+          recentFixations.forEach(fixation => {
+            const opacity = Math.min(1, 1 - (now - fixation.endTime) / timeWindow);
+            const radius = Math.sqrt(fixation.duration / 100) * config.eyeTracking.visualization.fixationRadiusScale;
+            
+            const fixationEl = document.createElement('div');
+            fixationEl.className = 'eye-movement-visual fixation-visual';
+            fixationEl.style.position = 'absolute';
+            fixationEl.style.left = `${fixation.x}px`;
+            fixationEl.style.top = `${fixation.y}px`;
+            fixationEl.style.width = `${radius * 2}px`;
+            fixationEl.style.height = `${radius * 2}px`;
+            fixationEl.style.borderRadius = '50%';
+            fixationEl.style.border = '2px solid rgba(0, 255, 0, ' + opacity + ')';
+            fixationEl.style.backgroundColor = 'rgba(0, 255, 0, ' + (opacity * 0.3) + ')';
+            fixationEl.style.transform = 'translate(-50%, -50%)';
+            fixationEl.style.zIndex = '1002';
+            fixationEl.style.pointerEvents = 'none';
+            document.body.appendChild(fixationEl);
+          });
+        }
+        
+        if (config.eyeTracking.visualization.showSaccades) {
+          // Show recent saccades
+          const recentSaccades = eyeMovementData.saccades.filter(
+            s => s.endTime >= (now - timeWindow)
+          );
+          
+          recentSaccades.forEach(saccade => {
+            const opacity = Math.min(1, 1 - (now - saccade.endTime) / timeWindow);
+            
+            const saccadeLine = document.createElement('div');
+            saccadeLine.className = 'eye-movement-visual saccade-visual';
+            saccadeLine.style.position = 'absolute';
+            saccadeLine.style.left = `${saccade.startX}px`;
+            saccadeLine.style.top = `${saccade.startY}px`;
+            
+            // Calculate line length and angle
+            const dx = saccade.endX - saccade.startX;
+            const dy = saccade.endY - saccade.startY;
+            const length = Math.sqrt(dx*dx + dy*dy);
+            const angle = Math.atan2(dy, dx) * 180 / Math.PI;
+            
+            saccadeLine.style.width = `${length}px`;
+            saccadeLine.style.height = '2px';
+            saccadeLine.style.backgroundColor = `rgba(255, 0, 0, ${opacity})`;
+            saccadeLine.style.transformOrigin = '0 0';
+            saccadeLine.style.transform = `rotate(${angle}deg)`;
+            saccadeLine.style.zIndex = '1001';
+            saccadeLine.style.pointerEvents = 'none';
+            document.body.appendChild(saccadeLine);
+          });
+        }
+        
+        if (config.eyeTracking.visualization.showPursuits) {
+          // Show recent smooth pursuits
+          const recentPursuits = eyeMovementData.smoothPursuits.filter(
+            p => p.endTime >= (now - timeWindow)
+          );
+          
+          recentPursuits.forEach(pursuit => {
+            const opacity = Math.min(1, 1 - (now - pursuit.endTime) / timeWindow);
+            
+            // For pursuits, create a canvas to draw the path
+            const canvas = document.createElement('canvas');
+            canvas.className = 'eye-movement-visual pursuit-visual';
+            canvas.width = window.innerWidth;
+            canvas.height = window.innerHeight;
+            canvas.style.position = 'absolute';
+            canvas.style.left = '0';
+            canvas.style.top = '0';
+            canvas.style.zIndex = '1000';
+            canvas.style.pointerEvents = 'none';
+            document.body.appendChild(canvas);
+            
+            const ctx = canvas.getContext('2d');
+            ctx.strokeStyle = `rgba(0, 0, 255, ${opacity})`;
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            
+            // Draw lines between all points in the pursuit
+            if (pursuit.points && pursuit.points.length > 1) {
+              ctx.moveTo(pursuit.points[0].x, pursuit.points[0].y);
+              for (let i = 1; i < pursuit.points.length; i++) {
+                ctx.lineTo(pursuit.points[i].x, pursuit.points[i].y);
+              }
+              ctx.stroke();
+            }
+          });
+        }
+      }
+      
+      // Enhanced draw gaze point to visualize quality
+      function drawGazePoint(x, y, quality = 1.0) {
+        // Remove previous gaze point if exists
+        const existingPoint = document.getElementById('currentGazePoint');
+        if (existingPoint) {
+          document.body.removeChild(existingPoint);
+        }
+        
+        // Calculate color based on quality
+        const r = Math.round(255 * (1 - quality));
+        const g = Math.round(255 * quality);
+        const b = 0;
+        const colorQuality = `rgba(${r}, ${g}, ${b}, 0.7)`;
+        
+        // Create new gaze point
+        const gazePoint = document.createElement('div');
+        gazePoint.id = 'currentGazePoint';
+        gazePoint.style.position = 'absolute';
+        gazePoint.style.top = `${y}px`;
+        gazePoint.style.left = `${x}px`;
+        gazePoint.style.width = '20px';
+        gazePoint.style.height = '20px';
+        gazePoint.style.borderRadius = '50%';
+        gazePoint.style.backgroundColor = colorQuality;
+        gazePoint.style.transform = 'translate(-50%, -50%)';
+        gazePoint.style.zIndex = '1003';
+        gazePoint.style.pointerEvents = 'none';
+        document.body.appendChild(gazePoint);
+        
+        // Add ripple effect
+        const ripple = document.createElement('div');
+        ripple.style.position = 'absolute';
+        ripple.style.top = '50%';
+        ripple.style.left = '50%';
+        ripple.style.width = '100%';
+        ripple.style.height = '100%';
+        ripple.style.borderRadius = '50%';
+        ripple.style.backgroundColor = colorQuality.replace('0.7', '0.3');
+        ripple.style.transform = 'translate(-50%, -50%) scale(1)';
+        ripple.style.transition = 'all 0.5s ease-out';
+        gazePoint.appendChild(ripple);
+        
+        setTimeout(() => {
+          ripple.style.transform = 'translate(-50%, -50%) scale(2)';
+          ripple.style.opacity = '0';
+        }, 10);
+      }
+      
+      // Enhanced updateHeatmap that also uses eye movement data
+      function enhancedUpdateHeatmap() {
+        if (!heatmapLayer || !heatmapEnabled) return;
+        
+        const ctx = heatmapLayer.getContext('2d');
+        ctx.clearRect(0, 0, heatmapLayer.width, heatmapLayer.height);
+        
+        // If we have fixation data, use that for the heatmap
+        if (eyeMovementData.fixations.length > 0 && realTimeAnalysisEnabled) {
+          // Create heatmap from fixations (weighted by duration)
+          const gridSize = config.heatmapResolution;
+          const cellWidth = heatmapLayer.width / gridSize;
+          const cellHeight = heatmapLayer.height / gridSize;
+          const heatGrid = Array(gridSize).fill().map(() => Array(gridSize).fill(0));
+          
+          // Get only recent fixations (last 10 seconds)
+          const now = Date.now();
+          const timeWindow = 10000; // 10 seconds
+          const recentFixations = eyeMovementData.fixations.filter(
+            f => f.endTime >= (now - timeWindow)
+          );
+          
+          // Weight by duration and recency
+          recentFixations.forEach(fixation => {
+            const gridX = Math.floor(fixation.x / cellWidth);
+            const gridY = Math.floor(fixation.y / cellHeight);
+            
+            // Apply temporal decay - newer fixations have more weight
+            const age = (now - fixation.endTime) / timeWindow;
+            const recencyWeight = Math.max(0, 1 - age);
+            
+            // Apply duration weight - longer fixations have more weight
+            const durationWeight = Math.min(1, fixation.duration / 500); // Normalize to 0-1
+            
+            // Combined weight
+            const weight = recencyWeight * durationWeight;
+            
+            if (gridX >= 0 && gridX < gridSize && gridY >= 0 && gridY < gridSize) {
+              heatGrid[gridY][gridX] += weight;
+            }
+          });
+          
+          // Find maximum value for normalization
+          let maxVal = 1;
+          for (let y = 0; y < gridSize; y++) {
+            for (let x = 0; x < gridSize; x++) {
+              maxVal = Math.max(maxVal, heatGrid[y][x]);
+            }
+          }
+          
+          // Draw heatmap
+          for (let y = 0; y < gridSize; y++) {
+            for (let x = 0; x < gridSize; x++) {
+              const intensity = heatGrid[y][x] / maxVal;
+              if (intensity > 0) {
+                const colorIndex = Math.min(
+                  Math.floor(intensity * config.heatmapColorScale.length),
+                  config.heatmapColorScale.length - 1
+                );
+                
+                ctx.fillStyle = config.heatmapColorScale[colorIndex];
+                ctx.beginPath();
+                ctx.arc(
+                  x * cellWidth + cellWidth / 2,
+                  y * cellHeight + cellHeight / 2,
+                  config.heatmapRadius * Math.sqrt(intensity),
+                  0, 2 * Math.PI
+                );
+                ctx.fill();
+              }
+            }
+          }
+        } else {
+          // Fall back to the original heatmap method using raw gaze data
+          if (gazeHistory.length === 0) return;
+          
+          // Create heatmap data structure (simple 2D grid)
+          const gridSize = config.heatmapResolution;
+          const cellWidth = heatmapLayer.width / gridSize;
+          const cellHeight = heatmapLayer.height / gridSize;
+          const heatGrid = Array(gridSize).fill().map(() => Array(gridSize).fill(0));
+          
+          // Populate grid with gaze data
+          gazeHistory.forEach(point => {
+            if (!point || point.x === undefined || point.y === undefined) return;
+            
+            const gridX = Math.floor(point.x / cellWidth);
+            const gridY = Math.floor(point.y / cellHeight);
+            
+            if (gridX >= 0 && gridX < gridSize && gridY >= 0 && gridY < gridSize) {
+              heatGrid[gridY][gridX] += 1;
+            }
+          });
+          
+          // Find maximum value for normalization
+          let maxVal = 1;
+          for (let y = 0; y < gridSize; y++) {
+            for (let x = 0; x < gridSize; x++) {
+              maxVal = Math.max(maxVal, heatGrid[y][x]);
+            }
+          }
+          
+          // Draw heatmap
+          for (let y = 0; y < gridSize; y++) {
+            for (let x = 0; x < gridSize; x++) {
+              const intensity = heatGrid[y][x] / maxVal;
+              if (intensity > 0) {
+                const colorIndex = Math.min(
+                  Math.floor(intensity * config.heatmapColorScale.length),
+                  config.heatmapColorScale.length - 1
+                );
+                
+                ctx.fillStyle = config.heatmapColorScale[colorIndex];
+                ctx.beginPath();
+                ctx.arc(
+                  x * cellWidth + cellWidth / 2,
+                  y * cellHeight + cellHeight / 2,
+                  config.heatmapRadius * Math.sqrt(intensity),
+                  0, 2 * Math.PI
+                );
+                ctx.fill();
+              }
+            }
+          }
+        }
       }
       
       // Stop recording session
@@ -1130,48 +2560,6 @@
         }
       }
       
-      // Draw current gaze point
-      function drawGazePoint(x, y) {
-        // Remove previous gaze point if exists
-        const existingPoint = document.getElementById('currentGazePoint');
-        if (existingPoint) {
-          document.body.removeChild(existingPoint);
-        }
-        
-        // Create new gaze point
-        const gazePoint = document.createElement('div');
-        gazePoint.id = 'currentGazePoint';
-        gazePoint.style.position = 'absolute';
-        gazePoint.style.top = `${y}px`;
-        gazePoint.style.left = `${x}px`;
-        gazePoint.style.width = '20px';
-        gazePoint.style.height = '20px';
-        gazePoint.style.borderRadius = '50%';
-        gazePoint.style.backgroundColor = 'rgba(255, 0, 0, 0.7)';
-        gazePoint.style.transform = 'translate(-50%, -50%)';
-        gazePoint.style.zIndex = '1003';
-        gazePoint.style.pointerEvents = 'none';
-        document.body.appendChild(gazePoint);
-        
-        // Add ripple effect
-        const ripple = document.createElement('div');
-        ripple.style.position = 'absolute';
-        ripple.style.top = '50%';
-        ripple.style.left = '50%';
-        ripple.style.width = '100%';
-        ripple.style.height = '100%';
-        ripple.style.borderRadius = '50%';
-        ripple.style.backgroundColor = 'rgba(255, 0, 0, 0.3)';
-        ripple.style.transform = 'translate(-50%, -50%) scale(1)';
-        ripple.style.transition = 'all 0.5s ease-out';
-        gazePoint.appendChild(ripple);
-        
-        setTimeout(() => {
-          ripple.style.transform = 'translate(-50%, -50%) scale(2)';
-          ripple.style.opacity = '0';
-        }, 10);
-      }
-      
       // Toggle heatmap visibility
       function toggleHeatmap() {
         heatmapEnabled = !heatmapEnabled;
@@ -1204,41 +2592,82 @@
         console.log(`Preparing to export ${recordingSession.frames.length} frames of data`);
         
         try {
-          // Prepare CSV data
+          // Prepare CSV data for raw gaze points
           console.log('Generating CSV content...');
           const csvContent = "data:text/csv;charset=utf-8," + 
-            "timestamp,gazeX,gazeY,headX,headY,headWidth,headHeight\n" +
+            "timestamp,gazeX,gazeY,headX,headY,headWidth,headHeight,trackingQuality\n" +
             recordingSession.frames.map(frame => {
               const head = frame.headPosition || {};
               return `${frame.timestamp},${frame.gazeX},${frame.gazeY},` +
                      `${head.imagex || ''},${head.imagey || ''},` +
-                     `${head.width || ''},${head.height || ''}`;
+                     `${head.width || ''},${head.height || ''},` +
+                     `${frame.trackingQuality || '1.0'}`;
             }).join("\n");
           
           console.log('CSV content generated successfully');
           
-          // Create download link
+          // Create download link for raw data
           const csvLink = document.createElement('a');
           csvLink.href = encodeURI(csvContent);
           csvLink.download = `gaze_recording_${recordingSession.id}.csv`;
           console.log(`Initiating CSV download: gaze_recording_${recordingSession.id}.csv`);
           csvLink.click();
           
-          // Prepare JSON data
-          console.log('Generating JSON content...');
+          // Generate enhanced CSV for eye movements
+          if (eyeMovementData.fixations.length > 0) {
+            console.log('Generating enhanced eye movement CSV...');
+            
+            // Fixations CSV
+            const fixationsCSV = "data:text/csv;charset=utf-8," + 
+              "id,startTime,endTime,duration,x,y,dispersion\n" +
+              eyeMovementData.fixations.map((fix, idx) => 
+                `${idx},${fix.startTime - recordingStartTime},${fix.endTime - recordingStartTime},` +
+                `${fix.duration},${fix.x},${fix.y},${fix.dispersion || ''}`
+              ).join("\n");
+            
+            const fixationLink = document.createElement('a');
+            fixationLink.href = encodeURI(fixationsCSV);
+            fixationLink.download = `fixations_${recordingSession.id}.csv`;
+            console.log(`Initiating fixations CSV download`);
+            fixationLink.click();
+            
+            // Saccades CSV if we have saccade data
+            if (eyeMovementData.saccades.length > 0) {
+              const saccadesCSV = "data:text/csv;charset=utf-8," + 
+                "id,startTime,endTime,duration,startX,startY,endX,endY,amplitude,peakVelocity,direction\n" +
+                eyeMovementData.saccades.map((sacc, idx) => 
+                  `${idx},${sacc.startTime - recordingStartTime},${sacc.endTime - recordingStartTime},` +
+                  `${sacc.duration},${sacc.startX},${sacc.startY},${sacc.endX},${sacc.endY},` +
+                  `${sacc.amplitude},${sacc.peakVelocity},${sacc.direction}`
+                ).join("\n");
+              
+              const saccadeLink = document.createElement('a');
+              saccadeLink.href = encodeURI(saccadesCSV);
+              saccadeLink.download = `saccades_${recordingSession.id}.csv`;
+              console.log(`Initiating saccades CSV download`);
+              saccadeLink.click();
+            }
+          }
+          
+          // Prepare comprehensive JSON data
+          console.log('Generating enhanced JSON content...');
           const jsonData = {
             sessionInfo: {
               id: recordingSession.id,
               startTime: recordingSession.startTime,
-              endTime: recordingSession.endTime,
-              duration: recordingSession.duration,
+              endTime: recordingSession.startTime + 
+                       recordingSession.frames[recordingSession.frames.length - 1].timestamp,
+              duration: recordingSession.frames[recordingSession.frames.length - 1].timestamp,
               screenDimensions: recordingSession.screenDimensions
             },
             headCalibration: recordingSession.headCalibration,
-            frames: recordingSession.frames
+            frames: recordingSession.frames,
+            // Include advanced eye tracking data
+            eyeMovements: recordingSession.eyeMovements,
+            analytics: recordingSession.analytics || gazeMetrics
           };
           
-          console.log('JSON object created with session metadata');
+          console.log('JSON object created with session metadata and eye movement data');
           
           const jsonContent = "data:text/json;charset=utf-8," + 
             encodeURIComponent(JSON.stringify(jsonData));
@@ -1246,996 +2675,16 @@
           // Create download link
           const jsonLink = document.createElement('a');
           jsonLink.href = jsonContent;
-          jsonLink.download = `gaze_recording_${recordingSession.id}.json`;
-          console.log(`Initiating JSON download: gaze_recording_${recordingSession.id}.json`);
+          jsonLink.download = `gaze_recording_enhanced_${recordingSession.id}.json`;
+          console.log(`Initiating enhanced JSON download: gaze_recording_enhanced_${recordingSession.id}.json`);
           jsonLink.click();
           
-          console.log('Export completed successfully');
-          showNotification('Recording data exported');
+          console.log('Export completed successfully with enhanced eye movement data');
+          showNotification('Recording data exported with eye movement analysis');
         } catch (error) {
           console.error('Export failed with error:', error);
           showNotification('Export failed: ' + error.message, true);
         }
-      }
-
-      // Run a single trial
-      async function runTrial(trialNumber) {
-        console.log(`Starting trial ${trialNumber}...`);
-        currentTrial = trialNumber;
-        
-        try {
-          // Show fixation cross
-          console.log('Displaying fixation cross');
-          const fixation = new psychoJS.visual.TextStim({
-            win: experimentWindow,
-            text: '+',
-            height: 0.1,
-            color: new psychoJS.Color('white')
-          });
-
-          fixation.draw();
-          experimentWindow.flip();
-          await new Promise(resolve => setTimeout(resolve, 1000));
-
-          // Show stimulus
-          console.log(`Displaying stimulus for trial ${trialNumber}`);
-          const stimulus = new psychoJS.visual.TextStim({
-            win: experimentWindow,
-            text: `Trial ${trialNumber}`,
-            height: 0.1,
-            color: new psychoJS.Color('white')
-          });
-
-          stimulus.draw();
-          experimentWindow.flip();
-          await new Promise(resolve => setTimeout(resolve, 2000));
-          
-          // Inter-trial interval
-          console.log('Inter-trial interval');
-          experimentWindow.flip();
-          await new Promise(resolve => setTimeout(resolve, 500));
-          
-          console.log(`Trial ${trialNumber} completed successfully`);
-        } catch (error) {
-          console.error(`Error in trial ${trialNumber}:`, error);
-          showNotification(`Trial error: ${error.message}`, true);
-        }
-      }
-      
-      // Export data
-      function exportData() {
-        console.log('Starting export of experiment data...');
-        
-        if (!gazeData || gazeData.length === 0) {
-          console.error('Export failed: No gaze data available');
-          showNotification('No data available to export', true);
-          return;
-        }
-        
-        console.log(`Preparing to export ${gazeData.length} gaze data points`);
-        
-        try {
-          // CSV Export
-          console.log('Generating CSV content...');
-          const csvContent = "data:text/csv;charset=utf-8," + 
-            "timestamp,x,y,trial\n" +
-            gazeData.map(row => 
-              `${row.timestamp},${row.x},${row.y},${row.trial}`
-            ).join("\n");
-
-          const csvLink = document.createElement('a');
-          csvLink.href = encodeURI(csvContent);
-          csvLink.download = 'gaze_data.csv';
-          console.log('Initiating CSV download: gaze_data.csv');
-          csvLink.click();
-
-          // JSON Export
-          console.log('Generating JSON content...');
-          const jsonContent = "data:text/json;charset=utf-8," + 
-            encodeURIComponent(JSON.stringify(gazeData));
-
-          const jsonLink = document.createElement('a');
-          jsonLink.href = jsonContent;
-          jsonLink.download = 'gaze_data.json';
-          console.log('Initiating JSON download: gaze_data.json');
-          jsonLink.click();
-          
-          console.log('Export completed successfully');
-          showNotification('Data exported successfully');
-        } catch (error) {
-          console.error('Export failed with error:', error);
-          showNotification('Export failed: ' + error.message, true);
-        }
-      }
-
-      // UI Updates
-      function updateProgress(percent) {
-        console.log(`Updating progress bar to ${percent}%`);
-        ui.progressBar.style.width = `${percent}%`;
-      }
-
-      function showNotification(message, isError = false) {
-        console.log(`Notification: ${message}${isError ? ' (ERROR)' : ''}`);
-        ui.notification.textContent = message;
-        ui.notification.classList.toggle('error', isError);
-        ui.notification.classList.add('show');
-        setTimeout(() => ui.notification.classList.remove('show'), 3000);
-      }
-
-      function resetUI() {
-        console.log('Resetting UI elements');
-        ui.calibrateBtn.disabled = true;
-        ui.abortBtn.disabled = true;
-        ui.progressBar.style.width = '0%';
-        ui.statusText.textContent = 'Experiment ready';
-        ui.exportContainer.style.display = 'none';
-      }
-
-      // MODIFY EXISTING UI ELEMENTS AND ADD NEW ONES
-      document.addEventListener('DOMContentLoaded', () => {
-        // Add new buttons for the second pipeline
-        const controls = document.querySelector('.controls');
-        
-        // Add heatmap toggle button
-        const heatmapBtn = document.createElement('button');
-        heatmapBtn.id = 'heatmapBtn';
-        heatmapBtn.className = 'btn';
-        heatmapBtn.type = 'button';
-        heatmapBtn.textContent = 'Toggle Heatmap';
-        heatmapBtn.disabled = true;
-        controls.appendChild(heatmapBtn);
-        
-        // Add head calibration button
-        const headCalibBtn = document.createElement('button');
-        headCalibBtn.id = 'headCalibBtn';
-        headCalibBtn.className = 'btn';
-        headCalibBtn.type = 'button';
-        headCalibBtn.textContent = 'Calibrate Head Position';
-        headCalibBtn.disabled = true;
-        controls.appendChild(headCalibBtn);
-        
-        // Add recording button
-        const recordBtn = document.createElement('button');
-        recordBtn.id = 'recordBtn';
-        recordBtn.className = 'btn';
-        recordBtn.type = 'button';
-        recordBtn.textContent = 'Start Recording';
-        recordBtn.disabled = true;
-        controls.appendChild(recordBtn);
-        
-        // Update UI object with new elements
-        ui.heatmapBtn = heatmapBtn;
-        ui.headCalibBtn = headCalibBtn;
-        ui.recordBtn = recordBtn;
-        ui.longDurationControls = document.getElementById('longDurationControls');
-        ui.startLongSessionBtn = document.getElementById('startLongSessionBtn');
-        ui.pauseResumeBtn = document.getElementById('pauseResumeBtn');
-        ui.settingsBtn = document.getElementById('settingsBtn');
-        ui.saveSegmentBtn = document.getElementById('saveSegmentBtn');
-        ui.sessionStats = document.getElementById('sessionStats');
-        ui.settingsPanel = document.getElementById('settingsPanel');
-        ui.closeSettingsBtn = document.getElementById('closeSettingsBtn');
-        ui.applySettingsBtn = document.getElementById('applySettingsBtn');
-        ui.pauseIndicator = document.getElementById('pauseIndicator');
-        ui.qualityIndicator = document.getElementById('qualityIndicator');
-        ui.exportAllSegments = document.getElementById('exportAllSegments');
-        
-        // Add event listeners for new buttons
-        ui.heatmapBtn.addEventListener('click', toggleHeatmap);
-        
-        ui.headCalibBtn.addEventListener('click', async () => {
-          try {
-            const headCalibrationSuccess = await calibrateHeadPosition();
-            if (headCalibrationSuccess) {
-              ui.recordBtn.disabled = false;
-              ui.startLongSessionBtn.disabled = false;
-              ui.longDurationControls.style.display = 'flex';
-            }
-          } catch (error) {
-            showNotification(error.message, true);
-          }
-        });
-        
-        ui.recordBtn.addEventListener('click', async () => {
-          try {
-            if (isExperimentRunning) {
-              stopRecordingSession();
-              ui.recordBtn.textContent = 'Start Recording';
-            } else {
-              const recordingStarted = await startRecordingSession();
-              if (recordingStarted) {
-                ui.recordBtn.textContent = 'Stop Recording';
-                ui.heatmapBtn.disabled = false;
-              }
-            }
-          } catch (error) {
-            showNotification(error.message, true);
-          }
-        });
-        
-        // Long duration session event listeners
-        ui.startLongSessionBtn.addEventListener('click', async () => {
-          try {
-            if (isExperimentRunning) {
-              await finishLongDurationSession();
-              ui.startLongSessionBtn.textContent = 'Start Long Session';
-            } else {
-              const sessionStarted = await startLongDurationSession();
-              if (sessionStarted) {
-                ui.startLongSessionBtn.textContent = 'End Long Session';
-                ui.heatmapBtn.disabled = false;
-                ui.pauseResumeBtn.disabled = false;
-                ui.saveSegmentBtn.disabled = false;
-              }
-            }
-          } catch (error) {
-            showNotification(error.message, true);
-          }
-        });
-        
-        ui.pauseResumeBtn.addEventListener('click', () => {
-          togglePauseRecording();
-        });
-        
-        ui.settingsBtn.addEventListener('click', () => {
-          ui.settingsPanel.style.display = 'block';
-          
-          // Set current values in the form
-          document.getElementById('sessionDurationHours').value = config.longDurationHours;
-          document.getElementById('segmentDuration').value = config.segmentDuration / 60;
-          document.getElementById('autoSaveInterval').value = config.autoSaveInterval / 60;
-          document.getElementById('maxGazePoints').value = config.memoryManagement.maxGazeHistoryPoints;
-          document.getElementById('downsamplingFactor').value = config.memoryManagement.sampleDownsamplingFactor;
-          document.getElementById('pauseDetectionEnabled').checked = config.pauseDetection.enabled;
-          document.getElementById('inactivityThreshold').value = config.pauseDetection.inactivityThreshold;
-        });
-        
-        ui.closeSettingsBtn.addEventListener('click', () => {
-          ui.settingsPanel.style.display = 'none';
-        });
-        
-        ui.applySettingsBtn.addEventListener('click', () => {
-          applySettings();
-        });
-        
-        ui.saveSegmentBtn.addEventListener('click', async () => {
-          try {
-            if (isExperimentRunning && isLongDurationSession) {
-              await saveCurrentSegment();
-              startNewSegment();
-            }
-          } catch (error) {
-            showNotification(error.message, true);
-          }
-        });
-        
-        ui.exportAllSegments.addEventListener('click', () => {
-          exportAllSegments();
-        });
-        
-        // Add keyboard shortcuts
-        document.addEventListener('keydown', (e) => {
-          if (e.key === 'h' || e.key === 'H') {
-            if (!ui.heatmapBtn.disabled) {
-              toggleHeatmap();
-            }
-          } else if (e.key === 'Escape') {
-            if (isExperimentRunning) {
-              if (isLongDurationSession) {
-                togglePauseRecording();
-                showNotification('Recording paused with ESC key');
-              } else {
-                stopRecordingSession();
-                ui.recordBtn.textContent = 'Start Recording';
-                showNotification('Recording stopped with ESC key');
-              }
-            }
-          } else if (e.key === 'p' || e.key === 'P') {
-            if (isLongDurationSession && isExperimentRunning) {
-              togglePauseRecording();
-            }
-          } else if (e.key === 's' || e.key === 'S') {
-            if (isLongDurationSession && isExperimentRunning && !isPaused) {
-              saveCurrentSegment();
-              startNewSegment();
-              showNotification('Segment saved with S key');
-            }
-          }
-        });
-      });
-
-      // Event Handlers
-      ui.startBtn.addEventListener('click', async () => {
-        try {
-          const webgazerInitialized = await initializeWebGazer();
-          const psychojsInitialized = initializePsychoJS();
-
-          if (webgazerInitialized && psychojsInitialized) {
-            ui.calibrateBtn.disabled = false;
-            ui.abortBtn.disabled = false;
-            ui.headCalibBtn.disabled = false;
-            showNotification('Experiment initialized successfully');
-          }
-        } catch (error) {
-          showNotification(error.message, true);
-        }
-      });
-
-      ui.calibrateBtn.addEventListener('click', async () => {
-        try {
-          ui.statusText.textContent = 'Calibrating...';
-          const calibrationSuccess = await runCalibration();
-          
-          if (calibrationSuccess) {
-            showNotification('Calibration completed successfully');
-            isExperimentRunning = true;
-            
-            // Run trials
-            for (let trial = 1; trial <= config.trialCount; trial++) {
-              if (!isExperimentRunning) break;
-          await runTrial(trial);
-              updateProgress(trial / config.trialCount * 100);
-            }
-
-            // Show export options
-            ui.exportContainer.style.display = 'flex';
-          }
-        } catch (error) {
-          showNotification(error.message, true);
-        }
-      });
-
-      ui.abortBtn.addEventListener('click', () => {
-        if (isLongDurationSession) {
-          finishLongDurationSession();
-        } else {
-          isExperimentRunning = false;
-          webgazer.end();
-          showNotification('Experiment aborted');
-          resetUI();
-        }
-      });
-
-      ui.exportCSV.addEventListener('click', () => exportData());
-      ui.exportJSON.addEventListener('click', () => exportData());
-
-      // Handle window unload
-      window.addEventListener('beforeunload', (e) => {
-        if (isExperimentRunning && isLongDurationSession) {
-          // Try to auto-save if closing during long session
-          performAutoSave();
-          
-          // Show confirmation to prevent accidental closing
-          e.preventDefault();
-          e.returnValue = 'You have an active recording session. Are you sure you want to leave?';
-          return e.returnValue;
-        }
-        
-        if (webgazer) webgazer.end();
-        if (psychoJS) psychoJS.quit();
-        if (recordingSession) {
-          stopRecordingSession();
-        }
-      });
-
-      // Start a long duration recording session
-      async function startLongDurationSession() {
-        // Reset stats
-        sessionStats = {
-          totalDuration: 0,
-          activeDuration: 0,
-          pauseDuration: 0,
-          dataPoints: 0,
-          avgTrackingQuality: 1.0,
-          segmentCount: 0
-        };
-        
-        // Reset session state
-        isLongDurationSession = true;
-        currentSegment = 0;
-        recordedSegments = [];
-        totalPausedTime = 0;
-        isPaused = false;
-        
-        // Update UI
-        ui.sessionStats.style.display = 'block';
-        ui.statusText.textContent = 'Starting long duration session...';
-        
-        // Initialize recording components similar to regular recording
-        if (recordingSession) {
-          stopRecordingSession();
-        }
-        
-        // Initialize recording components
-        gazeHistory = [];
-        recordingStartTime = Date.now();
-        segmentStartTime = recordingStartTime;
-        lastCleanupTime = recordingStartTime;
-        
-        // Initialize session duration in milliseconds
-        const totalSessionDuration = config.longDurationHours * 60 * 60 * 1000;
-        
-        // Initialize coordinate plane and heatmap
-        initCoordinatePlane();
-        initHeatmap();
-        
-        // Create recording session object
-        recordingSession = {
-          id: `long_session_${Date.now()}`,
-          startTime: recordingStartTime,
-          frames: [],
-          headCalibration: headCalibrationData,
-          totalSessionDuration: totalSessionDuration,
-          segmentDuration: config.segmentDuration * 1000,
-          segments: [],
-          currentSegment: {
-            id: `segment_0_${Date.now()}`,
-            startTime: recordingStartTime,
-            frames: []
-          },
-          screenDimensions: {
-            width: window.innerWidth,
-            height: window.innerHeight
-          }
-        };
-        
-        // Update UI elements
-        updateSegmentIndicator();
-        
-        // Start recording loop
-        ui.statusText.textContent = 'Long duration recording in progress...';
-        isExperimentRunning = true;
-        
-        // Start auto-save interval
-        startAutoSave();
-        
-        // Start recording loop
-        longDurationRecordingLoop();
-        
-        // Update UI buttons
-        ui.pauseResumeBtn.disabled = false;
-        ui.saveSegmentBtn.disabled = false;
-        
-        return true;
-      }
-      
-      // Long duration recording loop
-      async function longDurationRecordingLoop() {
-        if (!isExperimentRunning) return;
-        if (isPaused) {
-          // If paused, just update the pause time and continue the loop
-          updatePauseTime();
-          requestAnimationFrame(longDurationRecordingLoop);
-          return;
-        }
-        
-        const now = Date.now();
-        const totalElapsedTime = now - recordingStartTime - totalPausedTime;
-        const segmentElapsedTime = now - segmentStartTime - totalPausedTime;
-        
-        // Update session statistics
-        currentRecordingTime = totalElapsedTime;
-        sessionStats.totalDuration = totalElapsedTime;
-        sessionStats.activeDuration = totalElapsedTime - sessionStats.pauseDuration;
-        
-        // Update progress based on total session duration
-        const totalProgress = (totalElapsedTime / (config.longDurationHours * 60 * 60 * 1000)) * 100;
-        updateProgress(Math.min(totalProgress, 100));
-        
-        // Update timeline visualization
-        updateTimelineVisualization(totalElapsedTime);
-        
-        // Check if we need to start a new segment
-        const segmentDurationMs = config.segmentDuration * 1000;
-        if (segmentElapsedTime >= segmentDurationMs) {
-          await saveCurrentSegment();
-          startNewSegment();
-        }
-        
-        // Get current gaze prediction
-        const prediction = await webgazer.getCurrentPrediction();
-        if (prediction) {
-          // Get face features for tracking quality calculation
-          const faceFeatures = await webgazer.getCurrentFaceFeatures();
-          const trackingQuality = calculateTrackingQuality(faceFeatures);
-          
-          // Reset inactivity timer when we get a good prediction
-          resetInactivityTimer();
-          
-          // Add to history for heatmap with temporal information
-          gazeHistory.push({
-            x: prediction.x,
-            y: prediction.y,
-            timestamp: now,
-            quality: trackingQuality
-          });
-          
-          // Add to recording data
-          const frameData = {
-            timestamp: now - recordingStartTime - totalPausedTime,
-            gazeX: prediction.x,
-            gazeY: prediction.y,
-            trackingQuality: trackingQuality,
-            headPosition: faceFeatures
-          };
-          
-          recordingSession.frames.push(frameData);
-          recordingSession.currentSegment.frames.push(frameData);
-          
-          // Update stats
-          sessionStats.dataPoints++;
-          updateSessionStatsUI();
-          
-          // Draw current gaze point
-          drawGazePoint(prediction.x, prediction.y);
-          
-          // Update heatmap if enabled
-          if (heatmapEnabled) {
-            updateTemporalHeatmap();
-          }
-          
-          // Update quality indicator
-          updateQualityIndicator(trackingQuality);
-        }
-        
-        // Check if we need to perform memory management
-        const timeSinceLastCleanup = now - lastCleanupTime;
-        if (timeSinceLastCleanup > config.memoryManagement.cleanupInterval * 1000) {
-          performMemoryManagement();
-          lastCleanupTime = now;
-        }
-        
-        // Check if total session duration has been reached
-        const totalSessionDurationMs = config.longDurationHours * 60 * 60 * 1000;
-        if (totalElapsedTime >= totalSessionDurationMs) {
-          await finishLongDurationSession();
-        } else {
-          // Continue loop
-          requestAnimationFrame(longDurationRecordingLoop);
-        }
-      }
-      
-      // Start a new segment in the recording
-      function startNewSegment() {
-        currentSegment++;
-        segmentStartTime = Date.now();
-        
-        // Create new segment
-        recordingSession.currentSegment = {
-          id: `segment_${currentSegment}_${Date.now()}`,
-          startTime: segmentStartTime,
-          frames: []
-        };
-        
-        // Update stats
-        sessionStats.segmentCount++;
-        
-        // Update UI
-        updateSegmentIndicator();
-        showNotification(`Started segment ${currentSegment + 1}`);
-      }
-      
-      // Save the current segment
-      async function saveCurrentSegment() {
-        if (!recordingSession || !recordingSession.currentSegment) return;
-        
-        const segment = recordingSession.currentSegment;
-        segment.endTime = Date.now();
-        segment.duration = segment.endTime - segment.startTime;
-        
-        // Add segment to segments array
-        recordingSession.segments.push({...segment});
-        recordedSegments.push({...segment});
-        
-        // Notify user
-        showNotification(`Saved segment ${currentSegment + 1}`);
-        
-        // Optionally export the segment
-        await exportSegment(segment);
-        
-        return segment;
-      }
-      
-      // Auto-save functionality
-      function startAutoSave() {
-        if (autoSaveInterval) {
-          clearInterval(autoSaveInterval);
-        }
-        
-        const autoSaveIntervalMs = config.autoSaveInterval * 1000;
-        autoSaveInterval = setInterval(async () => {
-          if (isExperimentRunning && !isPaused) {
-            await performAutoSave();
-          }
-        }, autoSaveIntervalMs);
-      }
-      
-      // Perform auto-save
-      async function performAutoSave() {
-        // Create a snapshot of the current recording data
-        const snapshot = {
-          timestamp: Date.now(),
-          sessionData: {...recordingSession},
-          sessionStats: {...sessionStats}
-        };
-        
-        // Save to localStorage for recovery purposes
-        try {
-          localStorage.setItem('eyeTracking_autoSave', JSON.stringify(snapshot));
-          showNotification('Session auto-saved');
-        } catch (error) {
-          console.error('Auto-save failed:', error);
-        }
-      }
-      
-      // Pause/resume the recording
-      function togglePauseRecording() {
-        if (!isExperimentRunning || !isLongDurationSession) return;
-        
-        if (isPaused) {
-          // Resume recording
-          const pauseDuration = Date.now() - pauseStartTime;
-          totalPausedTime += pauseDuration;
-          sessionStats.pauseDuration += pauseDuration;
-          
-          isPaused = false;
-          ui.pauseResumeBtn.textContent = 'Pause';
-          ui.pauseIndicator.style.display = 'none';
-          showNotification('Recording resumed');
-        } else {
-          // Pause recording
-          isPaused = true;
-          pauseStartTime = Date.now();
-          ui.pauseResumeBtn.textContent = 'Resume';
-          ui.pauseIndicator.style.display = 'block';
-          showNotification('Recording paused');
-        }
-      }
-      
-      // Complete a long duration session
-      async function finishLongDurationSession() {
-        // Save the final segment
-        await saveCurrentSegment();
-        
-        // Stop the recording
-        stopRecordingSession();
-        
-        // Update UI
-        ui.statusText.textContent = 'Long duration session completed';
-        ui.exportContainer.style.display = 'flex';
-        
-        // Show completion notification
-        showNotification('Long duration session completed successfully');
-        
-        // Reset flags
-        isLongDurationSession = false;
-        
-        // Generate session summary
-        generateSessionSummary();
-      }
-      
-      // Memory management for long recordings
-      function performMemoryManagement() {
-        // Downsampling factor from config
-        const factor = config.memoryManagement.sampleDownsamplingFactor;
-        
-        // Limit frames in memory if needed
-        if (recordingSession.frames.length > config.memoryManagement.maxGazeHistoryPoints) {
-          // Only keep the most recent points
-          const startIndex = recordingSession.frames.length - config.memoryManagement.maxGazeHistoryPoints;
-          recordingSession.frames = recordingSession.frames.slice(startIndex);
-        }
-        
-        // Limit gaze history for visualization
-        if (gazeHistory.length > config.memoryManagement.maxGazeHistoryPoints) {
-          // Only keep recent points
-          const startIndex = gazeHistory.length - config.memoryManagement.maxGazeHistoryPoints;
-          gazeHistory = gazeHistory.slice(startIndex);
-        }
-        
-        // Apply downsampling if factor > 1
-        if (factor > 1 && recordingSession.frames.length > 1000) {
-          // Keep every Nth frame
-          recordingSession.frames = recordingSession.frames.filter((_, index) => index % factor === 0);
-          showNotification(`Memory optimized: Downsampled by ${factor}x`);
-        }
-      }
-      
-      // Reset inactivity timer
-      function resetInactivityTimer() {
-        if (inactivityTimer) {
-          clearTimeout(inactivityTimer);
-        }
-        
-        // Only set up inactivity detection if enabled
-        if (config.pauseDetection.enabled) {
-          inactivityTimer = setTimeout(() => {
-            // Auto-pause if we're in a long duration session and not already paused
-            if (isLongDurationSession && isExperimentRunning && !isPaused) {
-              showNotification('Auto-paused due to inactivity', true);
-              togglePauseRecording();
-            }
-          }, config.pauseDetection.inactivityThreshold * 1000);
-        }
-      }
-      
-      // Calculate tracking quality from face features
-      function calculateTrackingQuality(faceFeatures) {
-        // Simple quality metric (customize based on your needs)
-        if (!faceFeatures) return 0;
-        
-        // Calculate based on face detection confidence or other metrics
-        // This is a simplified example
-        let quality = 1.0;
-        
-        // Adjust quality based on face position, size, etc.
-        if (faceFeatures.width < 100 || faceFeatures.height < 100) {
-          quality *= 0.8; // Face too small
-        }
-        
-        lastTrackingQuality = quality;
-        return quality;
-      }
-      
-      // Update quality indicator
-      function updateQualityIndicator(quality) {
-        const indicator = document.getElementById('qualityIndicator');
-        
-        if (quality > 0.7) {
-          indicator.className = 'quality-indicator';
-        } else if (quality > 0.4) {
-          indicator.className = 'quality-indicator medium';
-        } else {
-          indicator.className = 'quality-indicator low';
-        }
-      }
-      
-      // Export a single segment
-      async function exportSegment(segment) {
-        if (!segment || segment.frames.length === 0) return;
-        
-        // Prepare segment data for export
-        const segmentData = {
-          id: segment.id,
-          startTime: segment.startTime,
-          endTime: segment.endTime || Date.now(),
-          duration: segment.duration || (Date.now() - segment.startTime),
-          framesCount: segment.frames.length,
-          frames: segment.frames
-        };
-        
-        // Export JSON format (can add CSV format as needed)
-        const jsonContent = "data:text/json;charset=utf-8," + 
-          encodeURIComponent(JSON.stringify(segmentData));
-        
-        // Create download link - but don't auto-download to avoid browser blocking
-        // Just store for later batch download
-        segment.exportData = jsonContent;
-        
-        return segmentData;
-      }
-      
-      // Export all segments
-      function exportAllSegments() {
-        if (!recordedSegments || recordedSegments.length === 0) {
-          showNotification('No segments available to export', true);
-          return;
-        }
-        
-        // Create a zip-like format with all segments
-        const allSegmentsData = {
-          sessionId: recordingSession?.id || `session_${Date.now()}`,
-          startTime: recordingSession?.startTime || recordedSegments[0].startTime,
-          endTime: Date.now(),
-          segmentsCount: recordedSegments.length,
-          totalDataPoints: sessionStats.dataPoints,
-          segments: recordedSegments.map(segment => ({
-            id: segment.id,
-            startTime: segment.startTime,
-            endTime: segment.endTime || Date.now(),
-            duration: segment.duration || (Date.now() - segment.startTime),
-            framesCount: segment.frames.length
-          })),
-          stats: sessionStats
-        };
-        
-        // Create JSON download
-        const jsonContent = "data:text/json;charset=utf-8," + 
-          encodeURIComponent(JSON.stringify(allSegmentsData));
-        
-        // Create download link
-        const jsonLink = document.createElement('a');
-        jsonLink.href = jsonContent;
-        jsonLink.download = `eye_tracking_session_${Date.now()}.json`;
-        jsonLink.click();
-        
-        showNotification(`Exported ${recordedSegments.length} segments`);
-      }
-      
-      // Update segment indicator in UI
-      function updateSegmentIndicator() {
-        const container = document.getElementById('segmentIndicator');
-        container.innerHTML = '';
-        
-        // Calculate how many segments we expect in total
-        const totalDurationMs = config.longDurationHours * 60 * 60 * 1000;
-        const segmentDurationMs = config.segmentDuration * 1000;
-        const expectedSegments = Math.ceil(totalDurationMs / segmentDurationMs);
-        
-        // Create segment indicators
-        for (let i = 0; i < expectedSegments; i++) {
-          const dot = document.createElement('div');
-          dot.className = 'segment-dot';
-          
-          if (i < currentSegment) {
-            dot.classList.add('completed');
-          } else if (i === currentSegment) {
-            dot.classList.add('active');
-          }
-          
-          container.appendChild(dot);
-        }
-      }
-      
-      // Format time for display (HH:MM:SS)
-      function formatTime(milliseconds) {
-        const totalSeconds = Math.floor(milliseconds / 1000);
-        const hours = Math.floor(totalSeconds / 3600);
-        const minutes = Math.floor((totalSeconds % 3600) / 60);
-        const seconds = totalSeconds % 60;
-        
-        return [
-          hours.toString().padStart(2, '0'),
-          minutes.toString().padStart(2, '0'),
-          seconds.toString().padStart(2, '0')
-        ].join(':');
-      }
-      
-      // Update session statistics UI
-      function updateSessionStatsUI() {
-        document.getElementById('totalTimeValue').textContent = formatTime(sessionStats.totalDuration);
-        document.getElementById('activeTimeValue').textContent = formatTime(sessionStats.activeDuration);
-        document.getElementById('pauseTimeValue').textContent = formatTime(sessionStats.pauseDuration);
-        document.getElementById('dataPointsValue').textContent = sessionStats.dataPoints.toLocaleString();
-        document.getElementById('trackingQualityValue').textContent = `${Math.round(lastTrackingQuality * 100)}%`;
-        document.getElementById('segmentCountValue').textContent = sessionStats.segmentCount + 1; // +1 for current segment
-      }
-      
-      // Update pause time counter
-      function updatePauseTime() {
-        if (isPaused) {
-          const currentPauseDuration = Date.now() - pauseStartTime;
-          document.getElementById('pauseTimeValue').textContent = formatTime(sessionStats.pauseDuration + currentPauseDuration);
-        }
-      }
-      
-      // Update timeline visualization
-      function updateTimelineVisualization(currentTimeMs) {
-        const timeline = document.getElementById('sessionTimeline');
-        const cursor = document.getElementById('timelineCursor');
-        
-        // Clear existing segments
-        const existingSegments = timeline.querySelectorAll('.timeline-segment');
-        existingSegments.forEach(el => el.remove());
-        
-        // Add completed segments
-        const totalDurationMs = config.longDurationHours * 60 * 60 * 1000;
-        recordedSegments.forEach((segment, index) => {
-          const segmentEl = document.createElement('div');
-          segmentEl.className = 'timeline-segment';
-          
-          // Position the segment on the timeline
-          const startPercent = (segment.startTime - recordingStartTime - totalPausedTime) / totalDurationMs * 100;
-          const endPercent = ((segment.endTime || Date.now()) - recordingStartTime - totalPausedTime) / totalDurationMs * 100;
-          const width = endPercent - startPercent;
-          
-          segmentEl.style.left = `${startPercent}%`;
-          segmentEl.style.width = `${width}%`;
-          
-          timeline.appendChild(segmentEl);
-        });
-        
-        // Position the current time cursor
-        const cursorPosition = (currentTimeMs / totalDurationMs) * 100;
-        cursor.style.left = `${cursorPosition}%`;
-      }
-      
-      // Update heatmap with temporal weighting
-      function updateTemporalHeatmap() {
-        if (!heatmapLayer || !heatmapEnabled || gazeHistory.length === 0) return;
-        
-        const ctx = heatmapLayer.getContext('2d');
-        ctx.clearRect(0, 0, heatmapLayer.width, heatmapLayer.height);
-        
-        // Create heatmap data structure
-        const gridSize = config.heatmapResolution;
-        const cellWidth = heatmapLayer.width / gridSize;
-        const cellHeight = heatmapLayer.height / gridSize;
-        const heatGrid = Array(gridSize).fill().map(() => Array(gridSize).fill(0));
-        
-        // Get current time for temporal weighting
-        const now = Date.now();
-        const timeWindow = config.visualization.timeWindow * 1000; // convert to ms
-        
-        // Populate grid with gaze data with temporal weighting
-        gazeHistory.forEach(point => {
-          if (!point || point.x === undefined || point.y === undefined) return;
-          
-          const gridX = Math.floor(point.x / cellWidth);
-          const gridY = Math.floor(point.y / cellHeight);
-          
-          // Only include points in the visualization time window
-          if (now - point.timestamp <= timeWindow) {
-            if (gridX >= 0 && gridX < gridSize && gridY >= 0 && gridY < gridSize) {
-              // Apply temporal weighting - more recent points have higher weight
-              const age = (now - point.timestamp) / timeWindow;
-              const weight = Math.pow(config.visualization.heatmapTemporalDecay, age);
-              heatGrid[gridY][gridX] += weight;
-            }
-          }
-        });
-        
-        // Draw heatmap (similar to existing implementation but with temporal weights)
-        let maxVal = 1;
-        for (let y = 0; y < gridSize; y++) {
-          for (let x = 0; x < gridSize; x++) {
-            maxVal = Math.max(maxVal, heatGrid[y][x]);
-          }
-        }
-        
-        for (let y = 0; y < gridSize; y++) {
-          for (let x = 0; x < gridSize; x++) {
-            const intensity = heatGrid[y][x] / maxVal;
-            if (intensity > 0) {
-              const colorIndex = Math.min(
-                Math.floor(intensity * config.heatmapColorScale.length),
-                config.heatmapColorScale.length - 1
-              );
-              
-              ctx.fillStyle = config.heatmapColorScale[colorIndex];
-              ctx.beginPath();
-              ctx.arc(
-                x * cellWidth + cellWidth / 2,
-                y * cellHeight + cellHeight / 2,
-                config.heatmapRadius * Math.sqrt(intensity),
-                0, 2 * Math.PI
-              );
-              ctx.fill();
-            }
-          }
-        }
-      }
-      
-      // Apply settings from the settings panel
-      function applySettings() {
-        // Get values from form
-        const hours = parseFloat(document.getElementById('sessionDurationHours').value);
-        const segmentDurationMinutes = parseInt(document.getElementById('segmentDuration').value);
-        const autoSaveIntervalMinutes = parseInt(document.getElementById('autoSaveInterval').value);
-        const maxGazePoints = parseInt(document.getElementById('maxGazePoints').value);
-        const downsamplingFactor = parseInt(document.getElementById('downsamplingFactor').value);
-        const pauseDetectionEnabled = document.getElementById('pauseDetectionEnabled').checked;
-        const inactivityThreshold = parseInt(document.getElementById('inactivityThreshold').value);
-        
-        // Update config
-        config.longDurationHours = hours;
-        config.segmentDuration = segmentDurationMinutes * 60; // convert to seconds
-        config.autoSaveInterval = autoSaveIntervalMinutes * 60; // convert to seconds
-        config.memoryManagement.maxGazeHistoryPoints = maxGazePoints;
-        config.memoryManagement.sampleDownsamplingFactor = downsamplingFactor;
-        config.pauseDetection.enabled = pauseDetectionEnabled;
-        config.pauseDetection.inactivityThreshold = inactivityThreshold;
-        
-        // Update auto-save interval if running
-        if (autoSaveInterval) {
-          clearInterval(autoSaveInterval);
-          startAutoSave();
-        }
-        
-        // Hide settings panel
-        document.getElementById('settingsPanel').style.display = 'none';
-        
-        showNotification('Settings applied');
       }
       
       // Generate session summary at the end
@@ -2256,6 +2705,112 @@
         
         console.log('Session Summary:', summary);
         return summary;
+      }
+
+      // Export data
+      function exportData() {
+        console.log('Starting export of experiment data...');
+        
+        if (!gazeData || gazeData.length === 0) {
+          console.error('Export failed: No gaze data available');
+          showNotification('No data available to export', true);
+          return;
+        }
+        
+        try {
+          // Basic CSV Export of raw gaze data
+          console.log('Generating CSV content...');
+          const csvContent = "data:text/csv;charset=utf-8," + 
+            "timestamp,x,y,trial\n" +
+            gazeData.map(row => 
+              `${row.timestamp},${row.x},${row.y},${row.trial}`
+            ).join("\n");
+
+          const csvLink = document.createElement('a');
+          csvLink.href = encodeURI(csvContent);
+          csvLink.download = 'gaze_data.csv';
+          console.log('Initiating CSV download: gaze_data.csv');
+          csvLink.click();
+
+          // Basic JSON Export of raw data
+          console.log('Generating JSON content...');
+          const jsonContent = "data:text/json;charset=utf-8," + 
+            encodeURIComponent(JSON.stringify(gazeData));
+
+          const jsonLink = document.createElement('a');
+          jsonLink.href = jsonContent;
+          jsonLink.download = 'gaze_data.json';
+          console.log('Initiating JSON download: gaze_data.json');
+          jsonLink.click();
+          
+          // Export enhanced eye movement data if available
+          if (eyeMovementData && (eyeMovementData.fixations.length > 0 || eyeMovementData.saccades.length > 0)) {
+            console.log('Generating enhanced eye movement data exports...');
+            
+            // Enhanced analysis JSON with all eye movement data
+            const enhancedData = {
+              session: {
+                id: recordingSession?.id || `session_${Date.now()}`,
+                duration: recordingSession?.frames?.[recordingSession.frames.length - 1]?.timestamp || 0,
+                screenDimensions: {
+                  width: window.innerWidth,
+                  height: window.innerHeight
+                }
+              },
+              eyeMovements: eyeMovementData,
+              metrics: gazeMetrics
+            };
+            
+            const enhancedJson = "data:text/json;charset=utf-8," + 
+              encodeURIComponent(JSON.stringify(enhancedData));
+            
+            const enhancedJsonLink = document.createElement('a');
+            enhancedJsonLink.href = enhancedJson;
+            enhancedJsonLink.download = 'eye_movement_analysis.json';
+            console.log('Initiating enhanced analysis download: eye_movement_analysis.json');
+            enhancedJsonLink.click();
+            
+            // Export separate CSVs for each eye movement type
+            if (eyeMovementData.fixations.length > 0) {
+              // Fixations CSV
+              const fixationsCSV = "data:text/csv;charset=utf-8," + 
+                "id,startTime,endTime,duration,x,y,dispersion\n" +
+                eyeMovementData.fixations.map((fix, idx) => 
+                  `${idx},${fix.startTime},${fix.endTime},` +
+                  `${fix.duration},${fix.x},${fix.y},${fix.dispersion || ''}`
+                ).join("\n");
+              
+              const fixationLink = document.createElement('a');
+              fixationLink.href = encodeURI(fixationsCSV);
+              fixationLink.download = 'fixations.csv';
+              console.log('Initiating fixations CSV download');
+              fixationLink.click();
+            }
+            
+            if (eyeMovementData.saccades.length > 0) {
+              // Saccades CSV
+              const saccadesCSV = "data:text/csv;charset=utf-8," + 
+                "id,startTime,endTime,duration,startX,startY,endX,endY,amplitude,peakVelocity,direction\n" +
+                eyeMovementData.saccades.map((sacc, idx) => 
+                  `${idx},${sacc.startTime},${sacc.endTime},` +
+                  `${sacc.duration},${sacc.startX},${sacc.startY},${sacc.endX},${sacc.endY},` +
+                  `${sacc.amplitude},${sacc.peakVelocity},${sacc.direction}`
+                ).join("\n");
+              
+              const saccadeLink = document.createElement('a');
+              saccadeLink.href = encodeURI(saccadesCSV);
+              saccadeLink.download = 'saccades.csv';
+              console.log('Initiating saccades CSV download');
+              saccadeLink.click();
+            }
+          }
+          
+          console.log('Export completed successfully');
+          showNotification('Data exported successfully with eye movement analysis');
+        } catch (error) {
+          console.error('Export failed with error:', error);
+          showNotification('Export failed: ' + error.message, true);
+        }
       }
     </script>
   </body>
