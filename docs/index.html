@@ -5,6 +5,19 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Advanced Eye Tracking Experiment</title>
     
+    <!-- Fix for Canvas2D willReadFrequently warning -->
+    <script>
+      // Fix for Canvas2D willReadFrequently warning in WebGazer
+      const originalGetContext = HTMLCanvasElement.prototype.getContext;
+      HTMLCanvasElement.prototype.getContext = function(type, attributes) {
+        if (type === '2d') {
+          if (!attributes) attributes = {};
+          attributes.willReadFrequently = true;
+        }
+        return originalGetContext.call(this, type, attributes);
+      };
+    </script>
+    
     <!-- Define loadLocalPsychoJS function to prevent reference errors -->
     <script>
       // This is a placeholder function to prevent "not defined" errors
@@ -21,8 +34,55 @@
       }, true);
     </script>
     
-    <!-- Use PsychoJS from CDN -->
-    <script src="https://lib.pavlovia.org/psychojs.js"></script>
+    <!-- Use PsychoJS from CDN with proper callback handling -->
+    <script>
+      // Track PsychoJS loading state
+      window.psychoJSLoaded = false;
+      
+      // Create and append the script tag
+      function loadPsychoJS() {
+        console.log('Attempting to load PsychoJS from CDN...');
+        const script = document.createElement('script');
+        script.src = 'https://lib.pavlovia.org/psychojs-2021.3.0.js';
+        script.async = true;
+        
+        script.onload = function() {
+          console.log('PsychoJS script loaded successfully');
+          window.psychoJSLoaded = true;
+          // Check if PsychoJS is actually defined
+          if (typeof PsychoJS !== 'undefined') {
+            console.log('PsychoJS is properly defined');
+          } else {
+            console.error('PsychoJS script loaded but PsychoJS object is not defined');
+          }
+        };
+        
+        script.onerror = function() {
+          console.error('Failed to load PsychoJS from CDN');
+          // Try alternative CDN
+          const fallbackScript = document.createElement('script');
+          fallbackScript.src = 'https://unpkg.com/psychojs@2021.3.0/dist/psychojs.js';
+          fallbackScript.async = true;
+          
+          fallbackScript.onload = function() {
+            console.log('PsychoJS loaded from fallback CDN');
+            window.psychoJSLoaded = true;
+          };
+          
+          fallbackScript.onerror = function() {
+            console.error('Failed to load PsychoJS from fallback CDN');
+          };
+          
+          document.head.appendChild(fallbackScript);
+        };
+        
+        document.head.appendChild(script);
+      }
+      
+      // Load PsychoJS
+      loadPsychoJS();
+    </script>
+    
     <script src="./webgazer.js" 
             onerror="console.error('Failed to load webgazer.js from local source');"></script>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600&display=swap" rel="stylesheet">
@@ -705,6 +765,53 @@
           if (typeof PsychoJS === 'undefined') {
             console.error("PsychoJS is not defined. Make sure the library is loaded correctly.");
             showNotification("PsychoJS library failed to load", true);
+            
+            // Try to wait for PsychoJS to load
+            if (window.psychoJSLoaded === false) {
+              showNotification("Waiting for PsychoJS to load...", false);
+              
+              // Return a promise that resolves when PsychoJS is loaded
+              return new Promise((resolve) => {
+                // Set a timeout for the promise
+                const timeoutId = setTimeout(() => {
+                  console.error("Timed out waiting for PsychoJS to load");
+                  showNotification("Timed out waiting for PsychoJS to load", true);
+                  resolve(false);
+                }, 10000); // 10 second timeout
+                
+                // Check every 500ms if PsychoJS is loaded
+                const checkInterval = setInterval(() => {
+                  if (typeof PsychoJS !== 'undefined') {
+                    clearTimeout(timeoutId);
+                    clearInterval(checkInterval);
+                    console.log("PsychoJS loaded successfully after waiting");
+                    showNotification("PsychoJS loaded successfully", false);
+                    
+                    // Initialize PsychoJS after it's loaded
+                    try {
+                      psychoJS = new PsychoJS({
+                        debug: true
+                      });
+                      
+                      experimentWindow = new psychoJS.visual.Window({
+                        size: [window.innerWidth, window.innerHeight],
+                        fullscr: config.fullscreen,
+                        color: new psychoJS.Color(config.backgroundColor),
+                        units: 'norm'
+                      });
+                      
+                      updateProgress(25);
+                      resolve(true);
+                    } catch (err) {
+                      console.error("Error initializing PsychoJS after waiting:", err);
+                      showNotification("Failed to initialize PsychoJS: " + err.message, true);
+                      resolve(false);
+                    }
+                  }
+                }, 500);
+              });
+            }
+            
             return false;
           }
           
@@ -2742,7 +2849,7 @@
             }
             
             // Check if PsychoJS is initialized
-            let isPsychoJSReady = initializePsychoJS();
+            let isPsychoJSReady = await initializePsychoJS();
             if (!isPsychoJSReady) {
               showNotification('Failed to initialize PsychoJS', true);
               return;
@@ -2769,7 +2876,7 @@
             }
             
             // Check if PsychoJS is initialized
-            let isPsychoJSReady = initializePsychoJS();
+            let isPsychoJSReady = await initializePsychoJS();
             if (!isPsychoJSReady) {
               showNotification('Failed to initialize PsychoJS', true);
               return;
