@@ -26,6 +26,10 @@ from psychopy import visual, core, event
 from scipy.spatial import distance
 import matplotlib.pyplot as plt
 from datetime import datetime
+import sys
+import keyboard
+from psychopy.hardware import keyboard as psych_keyboard
+import warnings
 
 # Initialize Haar cascade classifiers (using OpenCV's built-in cascades)
 face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
@@ -56,6 +60,26 @@ CONFIG = {
     'debug': {
         'enabled': False,  # Set to True to enable debug mode
         'save_eye_images': False
+    }
+}
+
+# Add system-specific configuration
+SYSTEM_CONFIG = {
+    'keyboard': {
+        'allowed_keys': ['c', 'r', 'q', 'escape', 'return', 'backspace'] + list('0123456789'),
+        'quit_keys': ['q', 'escape'],
+        'confirm_keys': ['return', 'space'],
+        'backspace_keys': ['backspace']
+    },
+    'display': {
+        'resolution': (1920, 1080),  # Default resolution
+        'refresh_rate': 60,  # Default refresh rate
+        'background_color': (0.2, 0.2, 0.2),  # Dark gray
+        'fullscreen': True
+    },
+    'timing': {
+        'frame_tolerance': 0.001,  # Tolerance for frame timing
+        'keyboard_timeout': 0.1  # Maximum time to wait for keyboard input
     }
 }
 
@@ -243,13 +267,25 @@ def detect_pupil(frame, debug=False):
     
     return None
 
-def show_message(win, text, duration=2):
-    """Display a message on the PsychoPy window for a specified duration."""
-    message = visual.TextStim(win, text=text, height=0.07, color="white", wrapWidth=1.8)
+def show_message(win, text, duration=2, wait_for_key=False):
+    """Enhanced message display with keyboard interaction option."""
+    message = visual.TextStim(
+        win,
+        text=text,
+        height=0.07,
+        color="white",
+        wrapWidth=1.8,
+        alignText='center'
+    )
+    
     message.draw()
     win.flip()
-    core.wait(duration)
     
+    if wait_for_key:
+        event.waitKeys()
+    else:
+        core.wait(duration)
+
 def draw_calibration_target(win, position, size=None, color=None):
     """Draw a calibration target with an optional inner point for better fixation."""
     # Use configuration parameters if not specified
@@ -763,22 +799,150 @@ def visualize_calibration_results(transform, raw_points, screen_points):
     plt.show(block=False)
     plt.pause(0.1)
 
-def main():
-    """Main experiment function with enhanced error handling and user options."""
+def init_experiment():
+    """
+    Initialize all experiment components with proper error handling.
+    
+    Returns:
+        dict: Contains initialized components (window, keyboard, etc.)
+    """
+    components = {}
+    
     try:
-        # Create the output directory
-        output_dir = ensure_output_dir()
+        # Create experiment info dialog
+        exp_info = {
+            'participant': '',
+            'session': '001',
+            'debug_mode': False
+        }
         
-        # Create a PsychoPy window
-        win = visual.Window(
-            fullscr=True, 
-            color=(0.2, 0.2, 0.2),  # Dark gray background
-            units="norm",
-            allowGUI=False,
-            winType='pyglet'
+        dlg = gui.DlgFromDict(
+            dictionary=exp_info,
+            title='Eye Tracking Experiment',
+            fixed=['debug_mode']
         )
         
-        # Display welcome message with options
+        if not dlg.OK:
+            print("User cancelled experiment.")
+            core.quit()
+        
+        # Update debug configuration
+        CONFIG['debug']['enabled'] = exp_info['debug_mode']
+        
+        # Initialize monitor
+        mon = monitors.Monitor('default')
+        mon.setSizePix(SYSTEM_CONFIG['display']['resolution'])
+        mon.setWidth(30)  # Set physical width in cm
+        mon.saveMon()
+        
+        # Create window with proper error handling
+        win = visual.Window(
+            fullscr=SYSTEM_CONFIG['display']['fullscreen'],
+            monitor=mon,
+            color=SYSTEM_CONFIG['display']['background_color'],
+            units="norm",
+            allowGUI=False,
+            winType='pyglet',
+            checkTiming=True
+        )
+        
+        # Check if window creation was successful
+        if not win._isFullScr and SYSTEM_CONFIG['display']['fullscreen']:
+            warnings.warn("Could not create fullscreen window. Falling back to windowed mode.")
+        
+        # Initialize keyboard
+        kb = psych_keyboard.Keyboard()
+        
+        # Test keyboard connectivity
+        test_keys = event.getKeys()
+        if not test_keys:
+            print("Warning: No keyboard input detected. Please check keyboard connectivity.")
+        
+        # Initialize camera with error handling
+        cap = init_camera()
+        if not cap.isOpened():
+            raise RuntimeError("Failed to initialize camera. Please check camera connectivity.")
+        
+        # Store components
+        components.update({
+            'window': win,
+            'keyboard': kb,
+            'camera': cap,
+            'exp_info': exp_info,
+            'monitor': mon
+        })
+        
+        return components
+        
+    except Exception as e:
+        cleanup_experiment(components)
+        raise RuntimeError(f"Failed to initialize experiment: {str(e)}")
+
+def cleanup_experiment(components):
+    """
+    Safely cleanup all experiment components.
+    
+    Args:
+        components: Dictionary containing experiment components
+    """
+    try:
+        if 'camera' in components and components['camera'] is not None:
+            components['camera'].release()
+        
+        if 'window' in components and components['window'] is not None:
+            components['window'].close()
+        
+        core.quit()
+        
+    except Exception as e:
+        print(f"Error during cleanup: {str(e)}")
+        sys.exit(1)
+
+def handle_keyboard_input(kb, allowed_keys=None, timeout=None):
+    """
+    Handle keyboard input with proper error checking.
+    
+    Args:
+        kb: PsychoPy keyboard object
+        allowed_keys: List of allowed keys
+        timeout: Maximum time to wait for input
+        
+    Returns:
+        list: List of detected keys
+    """
+    if allowed_keys is None:
+        allowed_keys = SYSTEM_CONFIG['keyboard']['allowed_keys']
+    
+    if timeout is None:
+        timeout = SYSTEM_CONFIG['timing']['keyboard_timeout']
+    
+    # Clear keyboard buffer
+    kb.clearEvents()
+    
+    # Wait for valid input
+    keys = []
+    start_time = core.getTime()
+    
+    while not keys and (timeout is None or core.getTime() - start_time < timeout):
+        keys = kb.getKeys(keyList=allowed_keys, waitRelease=False)
+        
+        if 'escape' in [key.name for key in keys]:
+            return ['escape']
+            
+    return [key.name for key in keys]
+
+def main():
+    """Enhanced main experiment function with proper initialization and cleanup."""
+    components = None
+    
+    try:
+        # Initialize all components
+        components = init_experiment()
+        win = components['window']
+        kb = components['keyboard']
+        cap = components['camera']
+        
+        # Display welcome message
         welcome_text = """
         Eye Tracking Experiment
         
@@ -788,121 +952,145 @@ def main():
         C - Calibrate the eye tracker
         R - Record gaze data (requires calibration first)
         Q - Quit the experiment
+        
+        Press any key to begin...
         """
         
-        welcome = visual.TextStim(win, text=welcome_text, height=0.07, color="white", wrapWidth=1.8)
-        welcome.draw()
-        win.flip()
+        welcome = visual.TextStim(
+            win,
+            text=welcome_text,
+            height=0.07,
+            color="white",
+            wrapWidth=1.8,
+            alignText='center'
+        )
         
-        # Wait for user selection
-        keys = event.waitKeys(keyList=['c', 'r', 'q'])
-        
-        # Initialize camera
-        cap = init_camera()
-        
+        # Main experiment loop
         transform = None
-        calibration_data = None
-        
-        # Main program loop
         running = True
+        
         while running:
-            if 'q' in keys:
+            # Show welcome screen
+            welcome.draw()
+            win.flip()
+            
+            # Wait for valid input
+            keys = handle_keyboard_input(kb)
+            
+            if not keys:
+                continue
+                
+            if 'escape' in keys or 'q' in keys:
                 running = False
                 continue
                 
             elif 'c' in keys:
                 # Run calibration
-                show_message(win, "Starting calibration procedure...", duration=1)
+                show_message(win, "Starting calibration procedure...\nPress any key when ready.", wait_for_key=True)
                 transform, accuracy = calibration_procedure(win, cap)
                 
                 if transform is None:
                     show_message(win, "Calibration failed. Please try again.", duration=2)
                 else:
-                    show_message(win, f"Calibration successful! Accuracy: {accuracy:.3f}", duration=2)
+                    show_message(win, f"Calibration successful!\nAccuracy: {accuracy:.3f}", duration=2)
                 
             elif 'r' in keys:
-                # Check if calibration has been done
                 if transform is None:
                     show_message(win, "Please calibrate first (press 'C').", duration=2)
-                else:
-                    # Get recording duration from user
-                    duration_prompt = visual.TextStim(
-                        win, 
-                        text="Enter recording duration in seconds (10-60):",
-                        height=0.07,
-                        color="white"
-                    )
-                    duration_input = visual.TextStim(
-                        win,
-                        text="30",
-                        height=0.07,
-                        color="yellow",
-                        pos=(0, -0.2)
-                    )
-                    
-                    duration_prompt.draw()
-                    duration_input.draw()
-                    win.flip()
-                    
-                    # Simple text input for duration
-                    duration_str = "30"  # Default
-                    done = False
-                    while not done:
-                        keys = event.waitKeys()
-                        if 'return' in keys:
-                            done = True
-                        elif 'backspace' in keys:
-                            duration_str = duration_str[:-1] if len(duration_str) > 0 else ""
-                        elif 'escape' in keys:
-                            duration_str = "30"
-                            done = True
-                        else:
-                            for key in keys:
-                                if key in '0123456789':
-                                    duration_str += key
-                        
-                        duration_input.text = duration_str
-                        duration_prompt.draw()
-                        duration_input.draw()
-                        win.flip()
-                    
-                    # Convert and validate duration
-                    try:
-                        duration = int(duration_str)
-                        duration = max(10, min(60, duration))  # Clamp between 10-60 seconds
-                    except ValueError:
-                        duration = 30  # Default
-                    
-                    # Start recording
-                    show_message(win, f"Recording eye movements for {duration} seconds...\nPlease look around the screen naturally.", duration=2)
-                    record_results = record_gaze(win, cap, transform, duration=duration)
-                    
-                    # Show recording stats
-                    show_message(win, f"Recording completed.\nSuccessful detections: {record_results['success_rate']:.1%}\nSample rate: {record_results['sample_rate']:.1f} Hz", duration=3)
-            
-            # Show main menu again
-            welcome.draw()
-            win.flip()
-            keys = event.waitKeys(keyList=['c', 'r', 'q'])
+                    continue
+                
+                # Get recording duration
+                duration = get_recording_duration(win, kb)
+                if duration is None:
+                    continue
+                
+                # Start recording
+                show_message(
+                    win,
+                    f"Recording eye movements for {duration} seconds...\n"
+                    "Please look around the screen naturally.\n\n"
+                    "Press any key to begin...",
+                    wait_for_key=True
+                )
+                
+                record_results = record_gaze(win, cap, transform, duration=duration)
+                
+                # Show results
+                show_message(
+                    win,
+                    f"Recording completed.\n"
+                    f"Success rate: {record_results['success_rate']:.1%}\n"
+                    f"Sample rate: {record_results['sample_rate']:.1f} Hz\n\n"
+                    "Press any key to continue...",
+                    wait_for_key=True
+                )
         
-        # Cleanup
-        cap.release()
-        win.close()
-        core.quit()
+        # Clean exit
+        cleanup_experiment(components)
         
     except Exception as e:
         # Handle unexpected errors
+        if components:
+            try:
+                show_message(
+                    components['window'],
+                    f"An error occurred:\n{str(e)}\n\nPress any key to exit.",
+                    wait_for_key=True
+                )
+            except:
+                pass
+            finally:
+                cleanup_experiment(components)
+        
         print(f"Error in experiment: {str(e)}")
-        try:
-            # Try to clean up and show error message
-            if 'cap' in locals():
-                cap.release()
-            if 'win' in locals() and win.winType != 'pyglet':
-                show_message(win, f"An error occurred:\n{str(e)}", duration=5)
-                win.close()
-        except:
-            pass
-        core.quit()
+        sys.exit(1)
+
+def get_recording_duration(win, kb):
+    """Get recording duration with proper input validation."""
+    duration_prompt = visual.TextStim(
+        win,
+        text="Enter recording duration (10-60 seconds):\nPress Enter to confirm, Escape to cancel",
+        height=0.07,
+        color="white",
+        pos=(0, 0.2)
+    )
+    
+    duration_input = visual.TextStim(
+        win,
+        text="30",
+        height=0.07,
+        color="yellow",
+        pos=(0, -0.2)
+    )
+    
+    duration_str = "30"
+    done = False
+    
+    while not done:
+        duration_prompt.draw()
+        duration_input.draw()
+        win.flip()
+        
+        keys = handle_keyboard_input(kb)
+        
+        if 'escape' in keys:
+            return None
+        elif 'return' in keys:
+            done = True
+        elif 'backspace' in keys:
+            duration_str = duration_str[:-1] if duration_str else ""
+        else:
+            for key in keys:
+                if key in '0123456789' and len(duration_str) < 2:
+                    duration_str += key
+        
+        duration_input.text = duration_str
+    
+    try:
+        duration = int(duration_str)
+        return max(10, min(60, duration))
+    except ValueError:
+        return 30
 
 if __name__ == "__main__":
     main()
