@@ -5,23 +5,17 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Advanced Eye Tracking Experiment</title>
     
-    <!-- Define fallback function before scripts that might need it -->
+    <!-- Define loadLocalPsychoJS function to prevent reference errors -->
     <script>
-      // Fallback for loading PsychoJS locally
+      // This is a placeholder function to prevent "not defined" errors
       function loadLocalPsychoJS() {
-        console.warn("Loading PsychoJS from CDN failed, attempting to load local version...");
-        const script = document.createElement('script');
-        script.src = "psychojs.js"; // Local copy of psychojs.js
-        script.onerror = function() {
-          console.error("Failed to load local PsychoJS. Please make sure 'psychojs.js' exists in the same directory.");
-          alert("Failed to load PsychoJS. The experiment may not work correctly.");
-        };
-        document.head.appendChild(script);
+        console.log("loadLocalPsychoJS called - using already loaded local implementation");
       }
     </script>
     
-    <!-- Modern dependencies -->
-    <script src="https://unpkg.com/psychojs@2023.2.3/dist/psychojs.js" onerror="loadLocalPsychoJS()"></script>
+    <!-- Local PsychoJS implementation -->
+    <script src="psychojs-dist/dist/psychojs.js"></script>
+    <link href="psychojs-dist/dist/psychojs.css" rel="stylesheet">
     <script src="webgazer.js"></script>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600&display=swap" rel="stylesheet">
     
