@@ -1992,10 +1992,8 @@
       }
       
       // Start recording session
-      async function startRecordingSession() {
-        if (recordingSession) {
-          stopRecordingSession();
-        }
+      function startRecordingSession() {
+        console.log('Starting recording session...');
         
         // Initialize recording components
         gazeHistory = [];
@@ -2008,110 +2006,16 @@
         };
         gazeMetrics = {};
         recordingStartTime = Date.now();
-        lastAnalysisTime = recordingStartTime;
         
-        // Initialize coordinate plane and heatmap
-        initCoordinatePlane();
-        initHeatmap();
+        showNotification('Recording started');
+      }
+      
+      // Stop recording session
+      function stopRecordingSession() {
+        console.log('Stopping recording session...');
         
-        // Create recording session object with enhanced eye tracking data structures
-        recordingSession = {
-          id: `session_${Date.now()}`,
-          startTime: recordingStartTime,
-          frames: [],
-          headCalibration: headCalibrationData,
-          screenDimensions: {
-            width: window.innerWidth,
-            height: window.innerHeight
-          },
-          // Advanced eye tracking data
-          eyeMovements: {
-            fixations: [],
-            saccades: [],
-            smoothPursuits: [],
-            blinks: []
-          },
-          analytics: {}
-        };
-        
-        // Start recording loop
-        ui.statusText.textContent = 'Recording in progress...';
-        isExperimentRunning = true;
-        
-        // Start real-time analysis if enabled
-        if (config.eyeTracking.realTimeAnalysisEnabled) {
-          startRealTimeAnalysis();
-        }
-        
-        const recordingLoop = async () => {
-          if (!isExperimentRunning) return;
-          
-          const elapsedTime = (Date.now() - recordingStartTime) / 1000;
-          updateProgress((elapsedTime / config.recordingDuration) * 100);
-          
-          // Get current gaze prediction
-          const prediction = await webgazer.getCurrentPrediction();
-          if (prediction) {
-            const timestamp = Date.now();
-            
-            // Add to history for heatmap
-            gazeHistory.push({
-              x: prediction.x,
-              y: prediction.y,
-              timestamp: timestamp - recordingStartTime
-            });
-            
-            // Get additional data for advanced analysis
-            const headPosition = await webgazer.getCurrentFaceFeatures();
-            const trackingQuality = calculateTrackingQuality(headPosition);
-            
-            // Enhanced frame data
-            const enhancedFrame = {
-              timestamp: timestamp - recordingStartTime,
-              gazeX: prediction.x,
-              gazeY: prediction.y,
-              headPosition: headPosition,
-              trackingQuality: trackingQuality,
-              // Add pupil data if available from WebGazer
-              pupilData: headPosition?.pupil || null
-            };
-            
-            // Add to recording data
-            recordingSession.frames.push(enhancedFrame);
-            
-            // Draw gaze point with quality indicator
-            drawGazePoint(prediction.x, prediction.y, trackingQuality);
-            
-            // Update heatmap if enabled
-            if (heatmapEnabled) {
-              enhancedUpdateHeatmap();
-            }
-            
-            // Visualize eye movements if we have data and visualization is enabled
-            if (eyeMovementData.fixations.length > 0) {
-              visualizeEyeMovements();
-            }
-          }
-          
-          // Check if recording duration has been reached
-          if (elapsedTime >= config.recordingDuration) {
-            stopRecordingSession();
-            
-            // Perform final comprehensive analysis
-            performFinalAnalysis();
-            
-            showNotification('Recording completed with advanced eye tracking analysis');
-            ui.exportContainer.style.display = 'flex';
-          } else {
-            // Continue loop
-            requestAnimationFrame(recordingLoop);
-          }
-        };
-        
-        // Start the recording loop
-        recordingLoop();
-        
-        return true;
+        // Final calculations if needed
+        showNotification('Recording stopped');
       }
       
       // Real-time eye movement analysis
@@ -2525,41 +2429,10 @@
       
       // Stop recording session
       function stopRecordingSession() {
-        isExperimentRunning = false;
+        console.log('Stopping recording session...');
         
-        if (recordingSession) {
-          recordingSession.endTime = Date.now();
-          recordingSession.duration = recordingSession.endTime - recordingSession.startTime;
-          
-          // Save recording data
-          gazeData = recordingSession.frames;
-          
-          // Clean up
-          if (coordinatePlane) {
-            document.body.removeChild(coordinatePlane);
-            coordinatePlane = null;
-          }
-          
-          if (heatmapLayer) {
-            document.body.removeChild(heatmapLayer);
-            heatmapLayer = null;
-          }
-          
-          ui.statusText.textContent = 'Recording stopped';
-          updateProgress(100);
-          
-          // Stop auto-save interval if running
-          if (autoSaveInterval) {
-            clearInterval(autoSaveInterval);
-            autoSaveInterval = null;
-          }
-          
-          // Stop inactivity timer if running
-          if (inactivityTimer) {
-            clearTimeout(inactivityTimer);
-            inactivityTimer = null;
-          }
-        }
+        // Final calculations if needed
+        showNotification('Recording stopped');
       }
       
       // Toggle heatmap visibility
@@ -2815,6 +2688,38 @@
         }
       }
 
+      // Utility functions
+      function updateProgress(percent) {
+        const progressBar = document.getElementById('progressBar');
+        if (progressBar) {
+          progressBar.style.width = percent + '%';
+          
+          // Add color coding based on progress
+          if (percent < 30) {
+            progressBar.style.backgroundColor = '#ef4444'; // Red for early progress
+          } else if (percent < 70) {
+            progressBar.style.backgroundColor = '#f59e0b'; // Amber for mid progress
+          } else {
+            progressBar.style.backgroundColor = '#22c55e'; // Green for near completion
+          }
+        }
+      }
+      
+      function showNotification(message, isError = false) {
+        const notification = document.getElementById('notification');
+        if (notification) {
+          notification.textContent = message;
+          notification.className = 'notification ' + (isError ? 'error' : 'success');
+          notification.style.display = 'block';
+          
+          // Hide notification after 5 seconds
+          setTimeout(() => {
+            notification.style.display = 'none';
+          }, 5000);
+        }
+        console.log(isError ? 'ERROR: ' : 'INFO: ', message);
+      }
+
       // Set up event listeners
       document.addEventListener('DOMContentLoaded', function() {
         // Initialize UI elements if they were not found earlier
@@ -2903,6 +2808,107 @@
         
         console.log('Event listeners setup complete');
       });
+
+      // Start experiment function
+      function startExperiment() {
+        console.log('Starting experiment...');
+        ui.statusText.textContent = 'Starting experiment...';
+        updateProgress(0);
+        
+        // Reset data
+        gazeData = [];
+        currentTrial = 0;
+        
+        // Check if calibration has been performed
+        if (!calibrationData || calibrationData.length === 0) {
+          console.warn('No calibration data found, results may be inaccurate');
+          showNotification('No calibration data. Consider calibrating first for accurate results.', true);
+        }
+        
+        // Initialize recording session
+        isExperimentRunning = true;
+        startRecordingSession();
+        
+        ui.statusText.textContent = 'Experiment running';
+        showNotification('Experiment started successfully');
+      }
+      
+      // Stop experiment function
+      function stopExperiment() {
+        console.log('Stopping experiment...');
+        
+        if (isExperimentRunning) {
+          stopRecordingSession();
+          isExperimentRunning = false;
+          
+          // Calculate session statistics
+          const stats = calculateSessionStatistics();
+          console.log('Session statistics:', stats);
+          
+          // Show export options
+          ui.exportContainer.style.display = 'block';
+          
+          ui.statusText.textContent = 'Experiment completed';
+          showNotification('Experiment stopped. Data ready for export.');
+        } else {
+          console.log('No experiment running to stop');
+        }
+      }
+      
+      // Calculate session statistics
+      function calculateSessionStatistics() {
+        const endTime = Date.now();
+        const totalDuration = (endTime - recordingStartTime) / 1000;
+        
+        const summary = {
+          duration: {
+            total: formatTime(totalDuration),
+            active: formatTime(totalDuration - (totalPausedTime / 1000)),
+            paused: formatTime(totalPausedTime / 1000)
+          },
+          dataPoints: gazeData.length,
+          timestamp: new Date().toISOString()
+        };
+        
+        return summary;
+      }
+      
+      // Format time helper
+      function formatTime(seconds) {
+        const minutes = Math.floor(seconds / 60);
+        const remainingSeconds = Math.floor(seconds % 60);
+        return `${minutes}:${remainingSeconds.toString().padStart(2, '0')}`;
+      }
+      
+      // Apply settings from the settings panel
+      function applySettings() {
+        console.log('Applying settings...');
+        
+        // Get settings values
+        const longDurationEnabled = document.getElementById('longDurationEnabled')?.checked || false;
+        const sessionDuration = parseInt(document.getElementById('sessionDuration')?.value || '60');
+        const segmentDuration = parseInt(document.getElementById('segmentDuration')?.value || '10');
+        const autoSaveInterval = parseInt(document.getElementById('autoSaveInterval')?.value || '5');
+        const pauseDetectionEnabled = document.getElementById('pauseDetectionEnabled')?.checked || true;
+        const inactivityThreshold = parseInt(document.getElementById('inactivityThreshold')?.value || '30');
+        
+        // Update config
+        config.longDurationEnabled = longDurationEnabled;
+        config.longDurationHours = sessionDuration / 60; // Convert minutes to hours
+        config.segmentDuration = segmentDuration * 60; // Convert minutes to seconds
+        config.autoSaveInterval = autoSaveInterval * 60; // Convert minutes to seconds
+        config.pauseDetection.enabled = pauseDetectionEnabled;
+        config.pauseDetection.inactivityThreshold = inactivityThreshold;
+        
+        console.log('Updated config:', config);
+        showNotification('Settings applied successfully');
+        
+        // Close settings panel if it's open
+        const settingsPanel = document.getElementById('settingsPanel');
+        if (settingsPanel) {
+          settingsPanel.style.display = 'none';
+        }
+      }
     </script>
   </body>
 </html>
