@@ -1,0 +1,3 @@
+[submodule "docs/psychojs"]
+	path = docs/psychojs
+	url = https://github.com/psychopy/psychojs.git 
