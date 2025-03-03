@@ -11,12 +11,24 @@
       function loadLocalPsychoJS() {
         console.log("loadLocalPsychoJS called - using already loaded local implementation");
       }
+
+      // Log when there's an error loading a script
+      window.addEventListener('error', function(event) {
+        console.log('Error event:', event);
+        if (event.target.tagName === 'SCRIPT') {
+          console.log('Script error:', event.target.src);
+        }
+      }, true);
     </script>
     
     <!-- Local PsychoJS implementation -->
-    <script src="psychojs-dist/dist/psychojs.js"></script>
+    <script src="psychojs-dist/dist/psychojs.js" 
+            onerror="console.error('Failed to load psychojs.js from local source');">
+    </script>
     <link href="psychojs-dist/dist/psychojs.css" rel="stylesheet">
-    <script src="webgazer.js"></script>
+    <script src="webgazer.js" 
+            onerror="console.error('Failed to load webgazer.js from local source');">
+    </script>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600&display=swap" rel="stylesheet">
     
     <style>
@@ -2806,6 +2818,95 @@
           showNotification('Export failed: ' + error.message, true);
         }
       }
+
+      // Set up event listeners
+      document.addEventListener('DOMContentLoaded', function() {
+        // Initialize UI elements if they were not found earlier
+        if (!ui.startBtn) ui.startBtn = document.getElementById('startBtn');
+        if (!ui.calibrateBtn) ui.calibrateBtn = document.getElementById('calibrateBtn');
+        if (!ui.abortBtn) ui.abortBtn = document.getElementById('abortBtn');
+        
+        console.log('Setting up button event listeners...');
+        
+        // Start button
+        if (ui.startBtn) {
+          ui.startBtn.addEventListener('click', async function() {
+            console.log('Start button clicked');
+            
+            // Check if WebGazer is initialized
+            let isWebGazerReady = await initializeWebGazer();
+            if (!isWebGazerReady) {
+              showNotification('Failed to initialize WebGazer', true);
+              return;
+            }
+            
+            // Check if PsychoJS is initialized
+            let isPsychoJSReady = initializePsychoJS();
+            if (!isPsychoJSReady) {
+              showNotification('Failed to initialize PsychoJS', true);
+              return;
+            }
+            
+            // Start experiment
+            startExperiment();
+          });
+          console.log('Start button listener attached');
+        } else {
+          console.error('Start button not found in the DOM');
+        }
+        
+        // Calibrate button
+        if (ui.calibrateBtn) {
+          ui.calibrateBtn.addEventListener('click', async function() {
+            console.log('Calibrate button clicked');
+            
+            // Check if WebGazer is initialized
+            let isWebGazerReady = await initializeWebGazer();
+            if (!isWebGazerReady) {
+              showNotification('Failed to initialize WebGazer', true);
+              return;
+            }
+            
+            // Check if PsychoJS is initialized
+            let isPsychoJSReady = initializePsychoJS();
+            if (!isPsychoJSReady) {
+              showNotification('Failed to initialize PsychoJS', true);
+              return;
+            }
+            
+            // Start calibration
+            ui.statusText.textContent = 'Starting calibration...';
+            runCalibration();
+          });
+          console.log('Calibrate button listener attached');
+        } else {
+          console.error('Calibrate button not found in the DOM');
+        }
+        
+        // Abort button
+        if (ui.abortBtn) {
+          ui.abortBtn.addEventListener('click', function() {
+            console.log('Abort button clicked');
+            stopExperiment();
+            ui.statusText.textContent = 'Experiment aborted';
+          });
+          console.log('Abort button listener attached');
+        } else {
+          console.error('Abort button not found in the DOM');
+        }
+        
+        // Apply settings button
+        const applySettingsBtn = document.getElementById('applySettingsBtn');
+        if (applySettingsBtn) {
+          applySettingsBtn.addEventListener('click', function() {
+            console.log('Apply settings button clicked');
+            applySettings();
+          });
+          console.log('Apply settings button listener attached');
+        }
+        
+        console.log('Event listeners setup complete');
+      });
     </script>
   </body>
 </html>
