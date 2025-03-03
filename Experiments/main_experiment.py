@@ -30,6 +30,7 @@ import sys
 import keyboard
 from psychopy.hardware import keyboard as psych_keyboard
 import warnings
+import platform
 
 # Initialize Haar cascade classifiers (using OpenCV's built-in cascades)
 face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
@@ -55,11 +56,17 @@ CONFIG = {
         'sample_rate': 30,  # Hz
         'feedback_enabled': True,
         'feedback_size': 0.03,
-        'feedback_color': 'green'
+        'feedback_color': 'green',
+        'long_session': False,
+        'chunk_size': 5 * 60,  # 5 minutes per file
+        'auto_backup': True
     },
     'debug': {
         'enabled': False,  # Set to True to enable debug mode
         'save_eye_images': False
+    },
+    'data': {
+        'format': 'CSV'
     }
 }
 
@@ -114,21 +121,82 @@ def init_camera(camera_id=0, width=640, height=480, fps=30):
     Returns:
         OpenCV VideoCapture object
     """
-    cap = cv2.VideoCapture(camera_id)
-    if not cap.isOpened():
-        raise Exception(f"Could not open camera ID {camera_id}.")
+    # Try multiple backends if available
+    backends = [cv2.CAP_ANY]
     
-    # Set camera properties
-    cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
-    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
-    cap.set(cv2.CAP_PROP_FPS, fps)
+    # Add platform-specific backends
+    if platform.system() == 'Windows':
+        backends.extend([cv2.CAP_DSHOW, cv2.CAP_MSMF])
+    elif platform.system() == 'Darwin':  # macOS
+        backends.extend([cv2.CAP_AVFOUNDATION])
+    elif platform.system() == 'Linux':
+        backends.extend([cv2.CAP_V4L2])
     
-    # Verify settings
-    actual_width = cap.get(cv2.CAP_PROP_FRAME_WIDTH)
-    actual_height = cap.get(cv2.CAP_PROP_FRAME_HEIGHT)
+    # Try each backend until one works
+    cap = None
+    for backend in backends:
+        try:
+            if backend == cv2.CAP_ANY:
+                cap = cv2.VideoCapture(camera_id)
+            else:
+                cap = cv2.VideoCapture(camera_id + backend)
+            
+            if cap is not None and cap.isOpened():
+                break
+        except Exception as e:
+            print(f"Backend initialization error: {str(e)}")
+            if cap is not None:
+                cap.release()
+            cap = None
+    
+    if cap is None or not cap.isOpened():
+        raise Exception(f"Could not open camera ID {camera_id} with any backend.")
+    
+    # Set camera properties with verification
+    # Try different strategies to set resolution
+    resolutions_to_try = [
+        (width, height),  # First try requested resolution
+        (640, 480),       # Fallback to standard resolution
+        (1280, 720),      # Alternative HD resolution
+        (0, 0)            # Let camera use default
+    ]
+    
+    success = False
+    for w, h in resolutions_to_try:
+        if w > 0 and h > 0:
+            cap.set(cv2.CAP_PROP_FRAME_WIDTH, w)
+            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, h)
+        
+        cap.set(cv2.CAP_PROP_FPS, fps)
+        
+        # Verify by reading a test frame
+        ret, test_frame = cap.read()
+        if ret and test_frame is not None:
+            success = True
+            break
+        else:
+            print(f"Failed to initialize with resolution {w}x{h}, trying next option...")
+    
+    if not success:
+        cap.release()
+        raise Exception("Failed to initialize camera with any resolution.")
+    
+    # Get actual properties
+    actual_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    actual_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     actual_fps = cap.get(cv2.CAP_PROP_FPS)
     
-    print(f"Camera initialized with resolution {actual_width}x{actual_height} @ {actual_fps} FPS")
+    # Try to get camera name/info
+    camera_info = f"ID: {camera_id}"
+    try:
+        backend_name = cap.getBackendName()
+        camera_info = f"ID: {camera_id}, Backend: {backend_name}"
+    except:
+        pass
+    
+    print(f"Camera initialized: {camera_info}")
+    print(f"Resolution: {actual_width}x{actual_height} @ {actual_fps} FPS")
+    
     return cap
 
 def detect_pupil(frame, debug=False):
@@ -895,10 +963,35 @@ def init_experiment():
     components = {}
     
     try:
-        # Create experiment info dialog
+        # Get available cameras
+        available_cameras = []
+        for i in range(10):  # Check for up to 10 cameras
+            cap = cv2.VideoCapture(i)
+            if cap.isOpened():
+                camera_name = f"Camera {i}"
+                # Try to get camera name (works on some systems)
+                try:
+                    ret, frame = cap.read()
+                    if ret:
+                        camera_name = f"Camera {i}: {cap.getBackendName()} ({int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))}x{int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))})"
+                except:
+                    pass
+                available_cameras.append((i, camera_name))
+            cap.release()
+        
+        if not available_cameras:
+            raise Exception("No cameras detected. Please connect a webcam and try again.")
+        
+        # Create experiment info dialog with camera selection
+        camera_options = [cam[1] for cam in available_cameras]
+        
         exp_info = {
             'participant': '',
             'session': '001',
+            'camera': camera_options[0] if camera_options else "No cameras found",
+            'resolution': ['640x480', '1280x720', '1920x1080'],
+            'recording_mode': ['Standard', 'Long Session (30-60 min)'],
+            'data_format': ['CSV', 'CSV+JSON', 'CSV+HDF5'],
             'debug_mode': False
         }
         
@@ -914,6 +1007,31 @@ def init_experiment():
         
         # Update debug configuration
         CONFIG['debug']['enabled'] = exp_info['debug_mode']
+        
+        # Parse selected camera
+        selected_camera_idx = 0
+        for idx, name in available_cameras:
+            if name == exp_info['camera']:
+                selected_camera_idx = idx
+                break
+        
+        # Parse selected resolution
+        width, height = 640, 480  # Default
+        if exp_info['resolution'] == '1280x720':
+            width, height = 1280, 720
+        elif exp_info['resolution'] == '1920x1080':
+            width, height = 1920, 1080
+        
+        # Configure long session settings if selected
+        if exp_info['recording_mode'] == 'Long Session (30-60 min)':
+            CONFIG['recording']['long_session'] = True
+            CONFIG['recording']['chunk_size'] = 5 * 60  # 5 minutes per file
+            CONFIG['recording']['auto_backup'] = True
+        else:
+            CONFIG['recording']['long_session'] = False
+        
+        # Configure data format
+        CONFIG['data']['format'] = exp_info['data_format']
         
         # Initialize monitor
         mon = monitors.Monitor('default')
@@ -945,7 +1063,7 @@ def init_experiment():
             print("Warning: No keyboard input detected. Please check keyboard connectivity.")
         
         # Initialize camera with error handling
-        cap = init_camera()
+        cap = init_camera(selected_camera_idx, width, height)
         if not cap.isOpened():
             raise RuntimeError("Failed to initialize camera. Please check camera connectivity.")
         
