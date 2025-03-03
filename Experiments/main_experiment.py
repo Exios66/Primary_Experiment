@@ -66,20 +66,27 @@ CONFIG = {
 # Add system-specific configuration
 SYSTEM_CONFIG = {
     'keyboard': {
-        'allowed_keys': ['c', 'r', 'q', 'escape', 'return', 'backspace'] + list('0123456789'),
+        'allowed_keys': ['c', 'r', 'q', 'escape', 'return', 'backspace', 'k'] + list('0123456789'),
         'quit_keys': ['q', 'escape'],
         'confirm_keys': ['return', 'space'],
-        'backspace_keys': ['backspace']
+        'backspace_keys': ['backspace'],
+        'killswitch_key': 'k'  # New killswitch key
     },
     'display': {
-        'resolution': (1920, 1080),  # Default resolution
-        'refresh_rate': 60,  # Default refresh rate
-        'background_color': (0.2, 0.2, 0.2),  # Dark gray
+        'resolution': (1920, 1080),
+        'refresh_rate': 60,
+        'background_color': (0.2, 0.2, 0.2),
         'fullscreen': True
     },
     'timing': {
-        'frame_tolerance': 0.001,  # Tolerance for frame timing
-        'keyboard_timeout': 0.1  # Maximum time to wait for keyboard input
+        'frame_tolerance': 0.001,
+        'keyboard_timeout': 0.1
+    },
+    'killswitch': {
+        'enabled': True,
+        'button_size': 0.05,
+        'button_color': 'red',
+        'button_pos': (0.95, 0.95)  # Top-right corner
     }
 }
 
@@ -559,17 +566,92 @@ def calibration_procedure(win, cap, n_samples=None):
     # Return the transformation function and mean error
     return transform, mean_error
 
-def record_gaze(win, cap, transform, csv_filename=None, duration=10):
+def create_killswitch_button(win):
+    """Create a killswitch button in the top-right corner."""
+    if not SYSTEM_CONFIG['killswitch']['enabled']:
+        return None
+        
+    button = visual.Circle(
+        win,
+        radius=SYSTEM_CONFIG['killswitch']['button_size'],
+        pos=SYSTEM_CONFIG['killswitch']['button_pos'],
+        fillColor=SYSTEM_CONFIG['killswitch']['button_color'],
+        lineColor='white',
+        lineWidth=2,
+        opacity=0.7
+    )
+    
+    label = visual.TextStim(
+        win,
+        text='X',
+        pos=SYSTEM_CONFIG['killswitch']['button_pos'],
+        color='white',
+        height=SYSTEM_CONFIG['killswitch']['button_size'],
+        bold=True
+    )
+    
+    return (button, label)
+
+def check_killswitch(win, kb, mouse, killswitch_elements=None):
     """
-    Enhanced gaze recording with better visualization and data quality metrics.
+    Check if killswitch has been activated (either by keyboard 'K' or clicking the button).
     
     Args:
         win: PsychoPy window
-        cap: OpenCV VideoCapture object
-        transform: Calibration transformation function
-        csv_filename: Output filename (uses timestamp if None)
-        duration: Recording duration in seconds
+        kb: Keyboard object
+        mouse: Mouse object
+        killswitch_elements: Tuple of (button, label) for the killswitch UI
+        
+    Returns:
+        bool: True if killswitch activated, False otherwise
     """
+    # Check keyboard (K key)
+    keys = kb.getKeys(keyList=[SYSTEM_CONFIG['keyboard']['killswitch_key']])
+    if keys:
+        return True
+    
+    # Check mouse click on killswitch button
+    if killswitch_elements and mouse.getPressed()[0]:  # Left click
+        button, _ = killswitch_elements
+        if button.contains(mouse.getPos()):
+            return True
+    
+    return False
+
+def safe_exit(components, message="Experiment terminated by killswitch"):
+    """
+    Safely terminate the experiment and return to PsychoPy interface.
+    
+    Args:
+        components: Dictionary of experiment components
+        message: Optional message to display before exiting
+    """
+    try:
+        if components and 'window' in components and components['window'] is not None:
+            # Display exit message
+            exit_msg = visual.TextStim(
+                components['window'],
+                text=message + "\n\nPress any key to exit...",
+                height=0.07,
+                color="white",
+                wrapWidth=1.8,
+                alignText='center'
+            )
+            exit_msg.draw()
+            components['window'].flip()
+            core.wait(0.5)  # Brief pause to prevent accidental key press
+            event.waitKeys()  # Wait for any key
+        
+        # Cleanup
+        cleanup_experiment(components)
+        
+    except Exception as e:
+        print(f"Error during safe exit: {str(e)}")
+    finally:
+        sys.exit(0)
+
+def record_gaze(win, cap, transform, csv_filename=None, duration=10, killswitch_fn=None):
+    """Enhanced gaze recording with killswitch support."""
     # Generate output filename if not provided
     if csv_filename is None:
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -646,6 +728,10 @@ def record_gaze(win, cap, transform, csv_filename=None, duration=10):
         baseline_time = start_time
         
         while time.time() - start_time < duration:
+            # Check killswitch if provided
+            if killswitch_fn and killswitch_fn():
+                return {'killed': True}
+            
             current_time = time.time()
             elapsed = current_time - start_time
             
@@ -863,13 +949,20 @@ def init_experiment():
         if not cap.isOpened():
             raise RuntimeError("Failed to initialize camera. Please check camera connectivity.")
         
+        # Initialize mouse for killswitch button
+        mouse = event.Mouse(win=win)
+        
+        # Create killswitch button
+        killswitch_elements = create_killswitch_button(win)
+        
         # Store components
         components.update({
             'window': win,
             'keyboard': kb,
             'camera': cap,
             'exp_info': exp_info,
-            'monitor': mon
+            'monitor': mon,
+            'mouse': mouse
         })
         
         return components
@@ -932,7 +1025,7 @@ def handle_keyboard_input(kb, allowed_keys=None, timeout=None):
     return [key.name for key in keys]
 
 def main():
-    """Enhanced main experiment function with proper initialization and cleanup."""
+    """Enhanced main experiment function with killswitch functionality."""
     components = None
     
     try:
@@ -941,6 +1034,12 @@ def main():
         win = components['window']
         kb = components['keyboard']
         cap = components['camera']
+        
+        # Initialize mouse for killswitch button
+        mouse = components['mouse']
+        
+        # Create killswitch button
+        killswitch_elements = create_killswitch_button(win)
         
         # Display welcome message
         welcome_text = """
@@ -952,6 +1051,7 @@ def main():
         C - Calibrate the eye tracker
         R - Record gaze data (requires calibration first)
         Q - Quit the experiment
+        K - Emergency stop (killswitch)
         
         Press any key to begin...
         """
@@ -970,20 +1070,27 @@ def main():
         running = True
         
         while running:
-            # Show welcome screen
+            # Show welcome screen and killswitch
             welcome.draw()
+            if killswitch_elements:
+                killswitch_elements[0].draw()
+                killswitch_elements[1].draw()
             win.flip()
+            
+            # Check for killswitch activation
+            if check_killswitch(win, kb, mouse, killswitch_elements):
+                safe_exit(components)
             
             # Wait for valid input
             keys = handle_keyboard_input(kb)
             
             if not keys:
                 continue
-                
+            
             if 'escape' in keys or 'q' in keys:
                 running = False
                 continue
-                
+            
             elif 'c' in keys:
                 # Run calibration
                 show_message(win, "Starting calibration procedure...\nPress any key when ready.", wait_for_key=True)
@@ -1004,46 +1111,44 @@ def main():
                 if duration is None:
                     continue
                 
-                # Start recording
+                # Start recording with killswitch monitoring
                 show_message(
                     win,
                     f"Recording eye movements for {duration} seconds...\n"
                     "Please look around the screen naturally.\n\n"
-                    "Press any key to begin...",
+                    "Press any key to begin... (K to cancel)",
                     wait_for_key=True
                 )
                 
-                record_results = record_gaze(win, cap, transform, duration=duration)
-                
-                # Show results
-                show_message(
-                    win,
-                    f"Recording completed.\n"
-                    f"Success rate: {record_results['success_rate']:.1%}\n"
-                    f"Sample rate: {record_results['sample_rate']:.1f} Hz\n\n"
-                    "Press any key to continue...",
-                    wait_for_key=True
-                )
+                # Start recording with killswitch monitoring
+                try:
+                    record_results = record_gaze(win, cap, transform, duration=duration, 
+                                               killswitch_fn=lambda: check_killswitch(win, kb, mouse, killswitch_elements))
+                    
+                    if record_results.get('killed', False):
+                        show_message(win, "Recording cancelled by killswitch.", duration=2)
+                        continue
+                        
+                    show_message(
+                        win,
+                        f"Recording completed.\n"
+                        f"Success rate: {record_results['success_rate']:.1%}\n"
+                        f"Sample rate: {record_results['sample_rate']:.1f} Hz\n\n"
+                        "Press any key to continue...",
+                        wait_for_key=True
+                    )
+                except Exception as e:
+                    show_message(win, f"Error during recording: {str(e)}\nPress any key to continue...", wait_for_key=True)
         
         # Clean exit
         cleanup_experiment(components)
         
     except Exception as e:
-        # Handle unexpected errors
         if components:
-            try:
-                show_message(
-                    components['window'],
-                    f"An error occurred:\n{str(e)}\n\nPress any key to exit.",
-                    wait_for_key=True
-                )
-            except:
-                pass
-            finally:
-                cleanup_experiment(components)
-        
-        print(f"Error in experiment: {str(e)}")
-        sys.exit(1)
+            safe_exit(components, message=f"An error occurred:\n{str(e)}")
+        else:
+            print(f"Error in experiment: {str(e)}")
+            sys.exit(1)
 
 def get_recording_duration(win, kb):
     """Get recording duration with proper input validation."""
