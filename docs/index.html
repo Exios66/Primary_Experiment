@@ -7,7 +7,7 @@
     
     <!-- Modern dependencies -->
     <script src="https://unpkg.com/psychojs@2023.2.3/dist/psychojs.js"></script>
-    <script src="https://webgazer.cs.brown.edu/webgazer.js"></script>
+    <script src="webgazer.js"></script>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600&display=swap" rel="stylesheet">
     
     <style>
@@ -446,7 +446,7 @@
       </div>
       
       <div class="settings-panel" id="settingsPanel">
-        <button class="close-btn" id="closeSettingsBtn">&times;</button>
+        <button class="close-btn" id="closeSettingsBtn" type="button">&times;</button>
         <h2>Long Duration Session Settings</h2>
         
         <div class="settings-group">
@@ -498,7 +498,7 @@
           </div>
         </div>
         
-        <button class="btn" id="applySettingsBtn">Apply Settings</button>
+        <button class="btn" id="applySettingsBtn" type="button">Apply Settings</button>
       </div>
       
       <div class="pause-indicator" id="pauseIndicator">
@@ -919,25 +919,96 @@
       function calculateAverageHeadPosition(samples) {
         if (!samples || samples.length === 0) return null;
         
-        // This is a simplified version - in a real implementation,
-        // you would extract more detailed face metrics
-        const avgPosition = { x: 0, y: 0, width: 0, height: 0 };
+        // Extract comprehensive face metrics for more accurate head position tracking
+        const avgPosition = { 
+          x: 0, 
+          y: 0, 
+          width: 0, 
+          height: 0,
+          rotation: 0,
+          confidence: 0,
+          eyeDistance: 0,
+          faceCenter: { x: 0, y: 0 }
+        };
+        
+        // Count valid samples for accurate averaging
+        let validSamples = 0;
         
         samples.forEach(sample => {
           if (sample && sample.imagex !== undefined) {
+            // Basic position metrics
             avgPosition.x += sample.imagex;
             avgPosition.y += sample.imagey;
             avgPosition.width += sample.width;
             avgPosition.height += sample.height;
+            
+            // Advanced metrics if available
+            if (sample.rotation !== undefined) {
+              avgPosition.rotation += sample.rotation;
+            }
+            
+            if (sample.confidence !== undefined) {
+              avgPosition.confidence += sample.confidence;
+            }
+            
+            // Calculate eye distance if eye positions are available
+            if (sample.eyeLeft && sample.eyeRight) {
+              const distance = Math.sqrt(
+                Math.pow(sample.eyeRight.x - sample.eyeLeft.x, 2) + 
+                Math.pow(sample.eyeRight.y - sample.eyeLeft.y, 2)
+              );
+              avgPosition.eyeDistance += distance;
+              
+              // Calculate face center based on eye positions
+              avgPosition.faceCenter.x += (sample.eyeLeft.x + sample.eyeRight.x) / 2;
+              avgPosition.faceCenter.y += (sample.eyeLeft.y + sample.eyeRight.y) / 2;
+            }
+            
+            validSamples++;
           }
         });
         
-        avgPosition.x /= samples.length;
-        avgPosition.y /= samples.length;
-        avgPosition.width /= samples.length;
-        avgPosition.height /= samples.length;
+        // Use valid sample count for averaging to handle missing data
+        const sampleCount = validSamples || 1; // Prevent division by zero
+        
+        avgPosition.x /= sampleCount;
+        avgPosition.y /= sampleCount;
+        avgPosition.width /= sampleCount;
+        avgPosition.height /= sampleCount;
+        avgPosition.rotation /= sampleCount;
+        avgPosition.confidence /= sampleCount;
+        avgPosition.eyeDistance /= sampleCount;
+        avgPosition.faceCenter.x /= sampleCount;
+        avgPosition.faceCenter.y /= sampleCount;
+        
+        // Calculate standard deviation for position stability assessment
+        avgPosition.stability = calculatePositionStability(samples, avgPosition);
         
         return avgPosition;
+      }
+      
+      // Helper function to calculate position stability
+      function calculatePositionStability(samples, avgPosition) {
+        if (!samples || samples.length < 2) return 1.0;
+        
+        let varianceSum = 0;
+        let validSamples = 0;
+        
+        samples.forEach(sample => {
+          if (sample && sample.imagex !== undefined) {
+            const xDiff = sample.imagex - avgPosition.x;
+            const yDiff = sample.imagey - avgPosition.y;
+            varianceSum += (xDiff * xDiff) + (yDiff * yDiff);
+            validSamples++;
+          }
+        });
+        
+        const variance = varianceSum / (validSamples || 1);
+        const stdDev = Math.sqrt(variance);
+        
+        // Convert to stability score (0-1 range, higher is more stable)
+        const maxExpectedDeviation = 50; // Pixels
+        return Math.max(0, Math.min(1, 1 - (stdDev / maxExpectedDeviation)));
       }
       
       // Start recording session
@@ -1122,30 +1193,40 @@
       
       // Export recording data
       function exportRecordingData() {
+        console.log('Starting export of recording data...');
+        
         if (!recordingSession || recordingSession.frames.length === 0) {
+          console.error('Export failed: No recording data available');
           showNotification('No recording data available', true);
           return;
         }
         
-        // Prepare CSV data
-        const csvContent = "data:text/csv;charset=utf-8," + 
-          "timestamp,gazeX,gazeY,headX,headY,headWidth,headHeight\n" +
-          recordingSession.frames.map(frame => {
-            const head = frame.headPosition || {};
-            return `${frame.timestamp},${frame.gazeX},${frame.gazeY},` +
-                   `${head.imagex || ''},${head.imagey || ''},` +
-                   `${head.width || ''},${head.height || ''}`;
-          }).join("\n");
+        console.log(`Preparing to export ${recordingSession.frames.length} frames of data`);
         
-        // Create download link
-        const csvLink = document.createElement('a');
-        csvLink.href = encodeURI(csvContent);
-        csvLink.download = `gaze_recording_${recordingSession.id}.csv`;
-        csvLink.click();
-        
-        // Prepare JSON data
-        const jsonContent = "data:text/json;charset=utf-8," + 
-          encodeURIComponent(JSON.stringify({
+        try {
+          // Prepare CSV data
+          console.log('Generating CSV content...');
+          const csvContent = "data:text/csv;charset=utf-8," + 
+            "timestamp,gazeX,gazeY,headX,headY,headWidth,headHeight\n" +
+            recordingSession.frames.map(frame => {
+              const head = frame.headPosition || {};
+              return `${frame.timestamp},${frame.gazeX},${frame.gazeY},` +
+                     `${head.imagex || ''},${head.imagey || ''},` +
+                     `${head.width || ''},${head.height || ''}`;
+            }).join("\n");
+          
+          console.log('CSV content generated successfully');
+          
+          // Create download link
+          const csvLink = document.createElement('a');
+          csvLink.href = encodeURI(csvContent);
+          csvLink.download = `gaze_recording_${recordingSession.id}.csv`;
+          console.log(`Initiating CSV download: gaze_recording_${recordingSession.id}.csv`);
+          csvLink.click();
+          
+          // Prepare JSON data
+          console.log('Generating JSON content...');
+          const jsonData = {
             sessionInfo: {
               id: recordingSession.id,
               startTime: recordingSession.startTime,
@@ -1155,80 +1236,126 @@
             },
             headCalibration: recordingSession.headCalibration,
             frames: recordingSession.frames
-          }));
-        
-        // Create download link
-        const jsonLink = document.createElement('a');
-        jsonLink.href = jsonContent;
-        jsonLink.download = `gaze_recording_${recordingSession.id}.json`;
-        jsonLink.click();
-        
-        showNotification('Recording data exported');
+          };
+          
+          console.log('JSON object created with session metadata');
+          
+          const jsonContent = "data:text/json;charset=utf-8," + 
+            encodeURIComponent(JSON.stringify(jsonData));
+          
+          // Create download link
+          const jsonLink = document.createElement('a');
+          jsonLink.href = jsonContent;
+          jsonLink.download = `gaze_recording_${recordingSession.id}.json`;
+          console.log(`Initiating JSON download: gaze_recording_${recordingSession.id}.json`);
+          jsonLink.click();
+          
+          console.log('Export completed successfully');
+          showNotification('Recording data exported');
+        } catch (error) {
+          console.error('Export failed with error:', error);
+          showNotification('Export failed: ' + error.message, true);
+        }
       }
 
       // Run a single trial
       async function runTrial(trialNumber) {
+        console.log(`Starting trial ${trialNumber}...`);
         currentTrial = trialNumber;
         
-        // Show fixation cross
-        const fixation = new psychoJS.visual.TextStim({
-          win: experimentWindow,
-          text: '+',
-          height: 0.1,
-          color: new psychoJS.Color('white')
-        });
+        try {
+          // Show fixation cross
+          console.log('Displaying fixation cross');
+          const fixation = new psychoJS.visual.TextStim({
+            win: experimentWindow,
+            text: '+',
+            height: 0.1,
+            color: new psychoJS.Color('white')
+          });
 
-        fixation.draw();
-        experimentWindow.flip();
-        await new Promise(resolve => setTimeout(resolve, 1000));
+          fixation.draw();
+          experimentWindow.flip();
+          await new Promise(resolve => setTimeout(resolve, 1000));
 
-        // Show stimulus
-        const stimulus = new psychoJS.visual.TextStim({
-          win: experimentWindow,
-          text: `Trial ${trialNumber}`,
-          height: 0.1,
-          color: new psychoJS.Color('white')
-        });
+          // Show stimulus
+          console.log(`Displaying stimulus for trial ${trialNumber}`);
+          const stimulus = new psychoJS.visual.TextStim({
+            win: experimentWindow,
+            text: `Trial ${trialNumber}`,
+            height: 0.1,
+            color: new psychoJS.Color('white')
+          });
 
-        stimulus.draw();
-        experimentWindow.flip();
-        await new Promise(resolve => setTimeout(resolve, 2000));
-        
-        // Inter-trial interval
-        experimentWindow.flip();
-        await new Promise(resolve => setTimeout(resolve, 500));
+          stimulus.draw();
+          experimentWindow.flip();
+          await new Promise(resolve => setTimeout(resolve, 2000));
+          
+          // Inter-trial interval
+          console.log('Inter-trial interval');
+          experimentWindow.flip();
+          await new Promise(resolve => setTimeout(resolve, 500));
+          
+          console.log(`Trial ${trialNumber} completed successfully`);
+        } catch (error) {
+          console.error(`Error in trial ${trialNumber}:`, error);
+          showNotification(`Trial error: ${error.message}`, true);
+        }
       }
       
       // Export data
       function exportData() {
-        // CSV Export
-        const csvContent = "data:text/csv;charset=utf-8," + 
-          "timestamp,x,y,trial\n" +
-          gazeData.map(row => 
-            `${row.timestamp},${row.x},${row.y},${row.trial}`
-          ).join("\n");
+        console.log('Starting export of experiment data...');
+        
+        if (!gazeData || gazeData.length === 0) {
+          console.error('Export failed: No gaze data available');
+          showNotification('No data available to export', true);
+          return;
+        }
+        
+        console.log(`Preparing to export ${gazeData.length} gaze data points`);
+        
+        try {
+          // CSV Export
+          console.log('Generating CSV content...');
+          const csvContent = "data:text/csv;charset=utf-8," + 
+            "timestamp,x,y,trial\n" +
+            gazeData.map(row => 
+              `${row.timestamp},${row.x},${row.y},${row.trial}`
+            ).join("\n");
 
-        const csvLink = document.createElement('a');
-        csvLink.href = encodeURI(csvContent);
-        csvLink.download = 'gaze_data.csv';
-        csvLink.click();
+          const csvLink = document.createElement('a');
+          csvLink.href = encodeURI(csvContent);
+          csvLink.download = 'gaze_data.csv';
+          console.log('Initiating CSV download: gaze_data.csv');
+          csvLink.click();
 
-        // JSON Export
-        const jsonContent = "data:text/json;charset=utf-8," + 
-          encodeURIComponent(JSON.stringify(gazeData));
+          // JSON Export
+          console.log('Generating JSON content...');
+          const jsonContent = "data:text/json;charset=utf-8," + 
+            encodeURIComponent(JSON.stringify(gazeData));
 
-        const jsonLink = document.createElement('a');
-        jsonLink.href = jsonContent;
-        jsonLink.download = 'gaze_data.json';
-        jsonLink.click();
+          const jsonLink = document.createElement('a');
+          jsonLink.href = jsonContent;
+          jsonLink.download = 'gaze_data.json';
+          console.log('Initiating JSON download: gaze_data.json');
+          jsonLink.click();
+          
+          console.log('Export completed successfully');
+          showNotification('Data exported successfully');
+        } catch (error) {
+          console.error('Export failed with error:', error);
+          showNotification('Export failed: ' + error.message, true);
+        }
       }
 
       // UI Updates
       function updateProgress(percent) {
+        console.log(`Updating progress bar to ${percent}%`);
         ui.progressBar.style.width = `${percent}%`;
       }
 
       function showNotification(message, isError = false) {
+        console.log(`Notification: ${message}${isError ? ' (ERROR)' : ''}`);
         ui.notification.textContent = message;
         ui.notification.classList.toggle('error', isError);
         ui.notification.classList.add('show');
@@ -1236,6 +1363,7 @@
       }
 
       function resetUI() {
+        console.log('Resetting UI elements');
         ui.calibrateBtn.disabled = true;
         ui.abortBtn.disabled = true;
         ui.progressBar.style.width = '0%';
