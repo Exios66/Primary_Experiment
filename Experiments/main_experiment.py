@@ -22,7 +22,7 @@ import numpy as np
 import csv
 import time
 import os
-from psychopy import visual, core, event
+from psychopy import visual, core, event, gui, monitors
 from scipy.spatial import distance
 import matplotlib.pyplot as plt
 from datetime import datetime
