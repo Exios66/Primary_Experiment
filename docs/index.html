@@ -5,17 +5,13 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Advanced Eye Tracking Experiment</title>
     
-    <!-- Modern dependencies -->
-    <script src="https://unpkg.com/psychojs@2023.2.3/dist/psychojs.js" onerror="loadLocalPsychoJS()"></script>
-    <script src="webgazer.js"></script>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600&display=swap" rel="stylesheet">
-    
+    <!-- Define fallback function before scripts that might need it -->
     <script>
       // Fallback for loading PsychoJS locally
       function loadLocalPsychoJS() {
         console.warn("Loading PsychoJS from CDN failed, attempting to load local version...");
         const script = document.createElement('script');
-        script.src = "psychojs.js"; // Ensure you have a local copy of psychojs.js
+        script.src = "psychojs.js"; // Local copy of psychojs.js
         script.onerror = function() {
           console.error("Failed to load local PsychoJS. Please make sure 'psychojs.js' exists in the same directory.");
           alert("Failed to load PsychoJS. The experiment may not work correctly.");
@@ -23,6 +19,11 @@
         document.head.appendChild(script);
       }
     </script>
+    
+    <!-- Modern dependencies -->
+    <script src="https://unpkg.com/psychojs@2023.2.3/dist/psychojs.js" onerror="loadLocalPsychoJS()"></script>
+    <script src="webgazer.js"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600&display=swap" rel="stylesheet">
     
     <style>
       :root {
