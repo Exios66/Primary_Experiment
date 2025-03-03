@@ -42,41 +42,59 @@
       // Create and append the script tag
       function loadPsychoJS() {
         console.log('Attempting to load PsychoJS from CDN...');
-        const script = document.createElement('script');
-        script.src = 'https://lib.pavlovia.org/psychojs-2021.3.0.js';
-        script.async = true;
         
-        script.onload = function() {
-          console.log('PsychoJS script loaded successfully');
-          window.psychoJSLoaded = true;
-          // Check if PsychoJS is actually defined
-          if (typeof PsychoJS !== 'undefined') {
-            console.log('PsychoJS is properly defined');
-          } else {
-            console.error('PsychoJS script loaded but PsychoJS object is not defined');
+        // Try multiple possible URLs in sequence
+        const cdnUrls = [
+          'https://lib.pavlovia.org/psychojs-2023.2.3.js',
+          'https://lib.pavlovia.org/psychojs.js',
+          'https://unpkg.com/psychojs@2023.2.3/dist/psychojs.js',
+          'https://lib.pavlovia.org/psychojs-2022.2.3.js',
+          'https://unpkg.com/psychojs/dist/psychojs.js'
+        ];
+        
+        let currentUrlIndex = 0;
+        
+        function tryLoadScript(urlIndex) {
+          if (urlIndex >= cdnUrls.length) {
+            console.error('Failed to load PsychoJS from any CDN');
+            return;
           }
-        };
-        
-        script.onerror = function() {
-          console.error('Failed to load PsychoJS from CDN');
-          // Try alternative CDN
-          const fallbackScript = document.createElement('script');
-          fallbackScript.src = 'https://unpkg.com/psychojs@2021.3.0/dist/psychojs.js';
-          fallbackScript.async = true;
           
-          fallbackScript.onload = function() {
-            console.log('PsychoJS loaded from fallback CDN');
-            window.psychoJSLoaded = true;
+          const url = cdnUrls[urlIndex];
+          console.log(`Trying to load PsychoJS from: ${url}`);
+          
+          const script = document.createElement('script');
+          script.src = url;
+          script.async = true;
+          
+          script.onload = function() {
+            console.log(`PsychoJS script loaded successfully from ${url}`);
+            // Check if PsychoJS is actually defined
+            setTimeout(() => {
+              if (typeof window.PsychoJS !== 'undefined') {
+                console.log('PsychoJS is properly defined');
+                window.psychoJSLoaded = true;
+                // Dispatch an event so other parts of the code know PsychoJS is ready
+                document.dispatchEvent(new CustomEvent('psychojs-loaded'));
+              } else {
+                console.error(`Script loaded from ${url} but PsychoJS is not defined`);
+                // Try next URL
+                tryLoadScript(urlIndex + 1);
+              }
+            }, 500); // Small delay to ensure script is parsed
           };
           
-          fallbackScript.onerror = function() {
-            console.error('Failed to load PsychoJS from fallback CDN');
+          script.onerror = function() {
+            console.error(`Failed to load PsychoJS from ${url}`);
+            // Try next URL
+            tryLoadScript(urlIndex + 1);
           };
           
-          document.head.appendChild(fallbackScript);
-        };
+          document.head.appendChild(script);
+        }
         
-        document.head.appendChild(script);
+        // Start trying to load
+        tryLoadScript(0);
       }
       
       // Load PsychoJS
@@ -760,79 +778,107 @@
 
       // Initialize PsychoJS
       function initializePsychoJS() {
-        try {
-          // Check if PsychoJS is defined
-          if (typeof PsychoJS === 'undefined') {
-            console.error("PsychoJS is not defined. Make sure the library is loaded correctly.");
-            showNotification("PsychoJS library failed to load", true);
-            
-            // Try to wait for PsychoJS to load
-            if (window.psychoJSLoaded === false) {
-              showNotification("Waiting for PsychoJS to load...", false);
-              
-              // Return a promise that resolves when PsychoJS is loaded
-              return new Promise((resolve) => {
-                // Set a timeout for the promise
-                const timeoutId = setTimeout(() => {
-                  console.error("Timed out waiting for PsychoJS to load");
-                  showNotification("Timed out waiting for PsychoJS to load", true);
-                  resolve(false);
-                }, 10000); // 10 second timeout
-                
-                // Check every 500ms if PsychoJS is loaded
-                const checkInterval = setInterval(() => {
-                  if (typeof PsychoJS !== 'undefined') {
-                    clearTimeout(timeoutId);
-                    clearInterval(checkInterval);
-                    console.log("PsychoJS loaded successfully after waiting");
-                    showNotification("PsychoJS loaded successfully", false);
-                    
-                    // Initialize PsychoJS after it's loaded
-                    try {
-                      psychoJS = new PsychoJS({
-                        debug: true
-                      });
-                      
-                      experimentWindow = new psychoJS.visual.Window({
-                        size: [window.innerWidth, window.innerHeight],
-                        fullscr: config.fullscreen,
-                        color: new psychoJS.Color(config.backgroundColor),
-                        units: 'norm'
-                      });
-                      
-                      updateProgress(25);
-                      resolve(true);
-                    } catch (err) {
-                      console.error("Error initializing PsychoJS after waiting:", err);
-                      showNotification("Failed to initialize PsychoJS: " + err.message, true);
-                      resolve(false);
-                    }
-                  }
-                }, 500);
+        console.log("Initializing PsychoJS...");
+        
+        return new Promise((resolve) => {
+          // Check if PsychoJS is already available
+          if (typeof window.PsychoJS !== 'undefined') {
+            console.log("PsychoJS is already loaded and ready to use");
+            try {
+              // Initialize PsychoJS objects
+              psychoJS = new window.PsychoJS({
+                debug: true
               });
+               
+              experimentWindow = new psychoJS.visual.Window({
+                size: [window.innerWidth, window.innerHeight],
+                fullscr: config.fullscreen,
+                color: new psychoJS.Color(config.backgroundColor),
+                units: 'norm'
+              });
+              
+              updateProgress(50);
+              console.log("PsychoJS successfully initialized");
+              resolve(true);
+            } catch (error) {
+              console.error("Error initializing PsychoJS objects:", error);
+              showNotification("Failed to initialize PsychoJS: " + error.message, true);
+              resolve(false);
             }
-            
-            return false;
+            return;
           }
           
-          psychoJS = new PsychoJS({
-            debug: true
-          });
-
-          experimentWindow = new psychoJS.visual.Window({
-            size: [window.innerWidth, window.innerHeight],
-            fullscr: config.fullscreen,
-            color: new psychoJS.Color(config.backgroundColor),
-            units: 'norm'
-          });
+          console.log("PsychoJS not yet available, waiting for it to load...");
+          showNotification("Waiting for PsychoJS to load...", false);
           
-          updateProgress(25); // Update progress to indicate successful initialization
-          return true;
-        } catch (error) {
-          console.error("Error initializing PsychoJS:", error);
-          showNotification("Failed to initialize PsychoJS: " + error.message, true);
-          return false;
-        }
+          // Set a timeout for the promise
+          const timeoutId = setTimeout(() => {
+            console.error("Timed out waiting for PsychoJS to load");
+            showNotification("Timed out waiting for PsychoJS to load", true);
+            resolve(false);
+          }, 15000); // 15 second timeout
+          
+          // Event listener for when PsychoJS is loaded
+          document.addEventListener('psychojs-loaded', function psychoJSLoadedHandler() {
+            console.log("Received psychojs-loaded event");
+            clearTimeout(timeoutId);
+            document.removeEventListener('psychojs-loaded', psychoJSLoadedHandler);
+            
+            try {
+              // Initialize PsychoJS objects
+              psychoJS = new window.PsychoJS({
+                debug: true
+              });
+               
+              experimentWindow = new psychoJS.visual.Window({
+                size: [window.innerWidth, window.innerHeight],
+                fullscr: config.fullscreen,
+                color: new psychoJS.Color(config.backgroundColor),
+                units: 'norm'
+              });
+              
+              updateProgress(50);
+              console.log("PsychoJS successfully initialized");
+              resolve(true);
+            } catch (error) {
+              console.error("Error initializing PsychoJS objects:", error);
+              showNotification("Failed to initialize PsychoJS: " + error.message, true);
+              resolve(false);
+            }
+          }, { once: true });
+          
+          // Also check periodically as a fallback
+          const checkInterval = setInterval(() => {
+            if (typeof window.PsychoJS !== 'undefined') {
+              clearTimeout(timeoutId);
+              clearInterval(checkInterval);
+              document.removeEventListener('psychojs-loaded', () => {});
+              console.log("PsychoJS detected during interval check");
+              
+              try {
+                // Initialize PsychoJS objects
+                psychoJS = new window.PsychoJS({
+                  debug: true
+                });
+                 
+                experimentWindow = new psychoJS.visual.Window({
+                  size: [window.innerWidth, window.innerHeight],
+                  fullscr: config.fullscreen,
+                  color: new psychoJS.Color(config.backgroundColor),
+                  units: 'norm'
+                });
+                
+                updateProgress(50);
+                console.log("PsychoJS successfully initialized");
+                resolve(true);
+              } catch (error) {
+                console.error("Error initializing PsychoJS objects:", error);
+                showNotification("Failed to initialize PsychoJS: " + error.message, true);
+                resolve(false);
+              }
+            }
+          }, 500);
+        });
       }
 
       // Calibration procedure
