@@ -31,6 +31,7 @@ import keyboard
 from psychopy.hardware import keyboard as psych_keyboard
 import warnings
 import platform
+import json
 
 # Initialize Haar cascade classifiers (using OpenCV's built-in cascades)
 face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
@@ -719,12 +720,60 @@ def safe_exit(components, message="Experiment terminated by killswitch"):
         sys.exit(0)
 
 def record_gaze(win, cap, transform, csv_filename=None, duration=10, killswitch_fn=None):
-    """Enhanced gaze recording with killswitch support."""
-    # Generate output filename if not provided
+    """
+    Enhanced gaze recording with support for longer sessions and improved data management.
+    
+    Args:
+        win: PsychoPy window object
+        cap: OpenCV camera capture object
+        transform: Calibration transformation function
+        csv_filename: Output filename (default: auto-generated)
+        duration: Recording duration in seconds
+        killswitch_fn: Function to check for kill signal
+        
+    Returns:
+        dict: Recording statistics
+    """
+    # Generate base output filename and directory
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    output_dir = ensure_output_dir()
+    
     if csv_filename is None:
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        output_dir = ensure_output_dir()
-        csv_filename = os.path.join(output_dir, f"gaze_data_{timestamp}.csv")
+        base_filename = f"gaze_data_{timestamp}"
+        csv_filename = os.path.join(output_dir, f"{base_filename}.csv")
+    else:
+        base_filename = os.path.splitext(os.path.basename(csv_filename))[0]
+    
+    # Prepare additional data files based on selected format
+    json_filename = None
+    hdf5_filename = None
+    
+    if 'JSON' in CONFIG['data']['format']:
+        json_filename = os.path.join(output_dir, f"{base_filename}.json")
+    
+    if 'HDF5' in CONFIG['data']['format']:
+        hdf5_filename = os.path.join(output_dir, f"{base_filename}.h5")
+        try:
+            import h5py
+        except ImportError:
+            print("HDF5 format selected but h5py not installed. Falling back to CSV only.")
+            hdf5_filename = None
+    
+    # Initialize data collection variables
+    all_gaze_data = []
+    recording_stats = {
+        'chunks': [],
+        'duration': duration,
+        'frames': 0,
+        'detections': 0,
+        'base_filename': base_filename,
+        'files': [csv_filename]
+    }
+    
+    # Determine if we're using chunked recording
+    is_long_session = CONFIG['recording']['long_session']
+    chunk_size = CONFIG['recording']['chunk_size']  # in seconds
+    current_chunk = 1
     
     # Create visual elements for recording feedback
     feedback_dot = visual.Circle(
@@ -760,6 +809,16 @@ def record_gaze(win, cap, transform, csv_filename=None, duration=10, killswitch_
         anchorHoriz='left'
     )
     
+    chunk_text = None
+    if is_long_session:
+        chunk_text = visual.TextStim(
+            win,
+            text=f"Chunk: 1 | Memory: 0%",
+            pos=(0, 0.9),
+            height=0.04,
+            color="yellow"
+        )
+    
     # Setup gaze path visualization (shows recent gaze trail)
     max_trail_points = 20
     gaze_trail = []
@@ -774,8 +833,66 @@ def record_gaze(win, cap, transform, csv_filename=None, duration=10, killswitch_
         xys=[(0,0)] * max_trail_points
     )
     
-    with open(csv_filename, mode='w', newline='') as csvfile:
-        csv_writer = csv.writer(csvfile)
+    # Function to create a new CSV file for chunking
+    def create_new_chunk_file(chunk_number):
+        if csv_filename:
+            new_csv = os.path.join(output_dir, f"{base_filename}_chunk{chunk_number}.csv")
+            recording_stats['files'].append(new_csv)
+            return new_csv
+        return None
+    
+    # Function to update memory usage display
+    def get_memory_usage():
+        try:
+            import psutil
+            process = psutil.Process(os.getpid())
+            memory_percent = process.memory_percent()
+            return memory_percent
+        except (ImportError, Exception):
+            return 0
+    
+    # Initialize the first CSV file
+    active_csv_file = csv_filename
+    if is_long_session and chunk_size < duration:
+        active_csv_file = create_new_chunk_file(current_chunk)
+    
+    current_csv = None
+    json_data = []
+    h5_file = None
+    h5_dataset = None
+    
+    try:
+        # Initialize HDF5 file if needed
+        if hdf5_filename:
+            import h5py
+            h5_file = h5py.File(hdf5_filename, 'w')
+            # Create extensible dataset
+            h5_dataset = h5_file.create_dataset(
+                'gaze_data', 
+                shape=(0, 7),  # timestamp, gaze_x, gaze_y, pupil_size, confidence, raw_x, raw_y
+                maxshape=(None, 7),
+                dtype='f',
+                chunks=True,
+                compression='gzip'
+            )
+            h5_file.attrs['timestamp'] = timestamp
+            h5_file.attrs['duration'] = duration
+        
+        # Main recording loop
+        start_time = time.time()
+        frame_count = 0
+        detection_success_count = 0
+        sample_interval = 1.0 / CONFIG['recording']['sample_rate']
+        last_frame_time = start_time
+        
+        # Use a consistent timestamp baseline
+        baseline_time = start_time
+        last_chunk_time = start_time
+        chunk_frame_count = 0
+        
+        # Open first CSV file
+        current_csv = open(active_csv_file, mode='w', newline='')
+        csv_writer = csv.writer(current_csv)
         # Enhanced CSV header
         csv_writer.writerow([
             "timestamp", 
@@ -787,26 +904,65 @@ def record_gaze(win, cap, transform, csv_filename=None, duration=10, killswitch_
             "raw_y"
         ])
         
-        start_time = time.time()
-        frame_count = 0
-        detection_success_count = 0
-        sample_interval = 1.0 / CONFIG['recording']['sample_rate']
-        
-        # Use a consistent timestamp baseline
-        baseline_time = start_time
-        
         while time.time() - start_time < duration:
             # Check killswitch if provided
             if killswitch_fn and killswitch_fn():
-                return {'killed': True}
+                if current_csv:
+                    current_csv.close()
+                if h5_file:
+                    h5_file.close()
+                return {'killed': True, **recording_stats}
             
             current_time = time.time()
             elapsed = current_time - start_time
+            
+            # Check if we need to start a new chunk
+            if is_long_session and chunk_size > 0 and current_time - last_chunk_time >= chunk_size:
+                # Close current chunk
+                current_csv.close()
+                
+                # Record chunk statistics
+                chunk_stats = {
+                    'chunk': current_chunk,
+                    'frames': chunk_frame_count,
+                    'start_time': last_chunk_time - baseline_time,
+                    'end_time': current_time - baseline_time,
+                    'duration': current_time - last_chunk_time
+                }
+                recording_stats['chunks'].append(chunk_stats)
+                
+                # Move to next chunk
+                current_chunk += 1
+                active_csv_file = create_new_chunk_file(current_chunk)
+                current_csv = open(active_csv_file, mode='w', newline='')
+                csv_writer = csv.writer(current_csv)
+                csv_writer.writerow([
+                    "timestamp", 
+                    "gaze_x", 
+                    "gaze_y", 
+                    "pupil_size", 
+                    "confidence", 
+                    "raw_x", 
+                    "raw_y"
+                ])
+                
+                # Reset chunk tracking
+                last_chunk_time = current_time
+                chunk_frame_count = 0
             
             # Update timer visuals
             progress_fraction = elapsed / duration
             timer_progress.width = 1.6 * progress_fraction
             recording_text.text = f"Recording gaze: {int(elapsed)}/{duration}s"
+            
+            # Update chunk information if in long session mode
+            if is_long_session and chunk_text:
+                memory_usage = get_memory_usage()
+                chunk_text.text = f"Chunk: {current_chunk} | Memory: {memory_usage:.1f}%"
+                if memory_usage > 80:
+                    chunk_text.color = "red"  # Indicate high memory usage
+                else:
+                    chunk_text.color = "yellow"
             
             # Control frame rate
             if frame_count > 0:
@@ -816,6 +972,7 @@ def record_gaze(win, cap, transform, csv_filename=None, duration=10, killswitch_
             
             last_frame_time = time.time()
             frame_count += 1
+            chunk_frame_count += 1
             
             # Capture and process frame
             ret, frame = cap.read()
@@ -829,6 +986,8 @@ def record_gaze(win, cap, transform, csv_filename=None, duration=10, killswitch_
             timer_bar.draw()
             timer_progress.draw()
             recording_text.draw()
+            if chunk_text:
+                chunk_text.draw()
             
             if pupil_data is not None:
                 detection_success_count += 1
@@ -844,9 +1003,9 @@ def record_gaze(win, cap, transform, csv_filename=None, duration=10, killswitch_
                 gaze_x = max(-1.0, min(1.0, gaze_x))
                 gaze_y = max(-1.0, min(1.0, gaze_y))
                 
-                # Update data and write to CSV
+                # Create data record
                 timestamp = current_time - baseline_time
-                csv_writer.writerow([
+                data_record = [
                     timestamp, 
                     gaze_x, 
                     gaze_y, 
@@ -854,7 +1013,20 @@ def record_gaze(win, cap, transform, csv_filename=None, duration=10, killswitch_
                     confidence,
                     raw_x,
                     raw_y
-                ])
+                ]
+                
+                # Write to current CSV
+                csv_writer.writerow(data_record)
+                
+                # Add to in-memory collection (limited size for JSON)
+                if len(all_gaze_data) < 10000 or not is_long_session:  # Only keep at most 10K points in memory for JSON
+                    all_gaze_data.append(data_record)
+                
+                # Add to HDF5 file if enabled
+                if h5_dataset is not None:
+                    current_size = h5_dataset.shape[0]
+                    h5_dataset.resize((current_size + 1, 7))
+                    h5_dataset[current_size] = data_record
                 
                 # Update gaze visualization
                 if CONFIG['recording']['feedback_enabled']:
@@ -877,28 +1049,85 @@ def record_gaze(win, cap, transform, csv_filename=None, duration=10, killswitch_
             
             # Update display
             win.flip()
+            
+            # Periodic backup for long sessions
+            if is_long_session and CONFIG['recording']['auto_backup'] and frame_count % 1000 == 0:
+                if json_filename:
+                    try:
+                        with open(json_filename + '.temp', 'w') as f:
+                            json.dump({
+                                'timestamp': timestamp,
+                                'stats': recording_stats,
+                                'data_sample': all_gaze_data[:1000]  # Just save a sample
+                            }, f)
+                        # Rename temp file to actual file
+                        if os.path.exists(json_filename + '.temp'):
+                            if os.path.exists(json_filename):
+                                os.remove(json_filename)
+                            os.rename(json_filename + '.temp', json_filename)
+                    except Exception as e:
+                        print(f"Error during auto-backup: {str(e)}")
+    
+    except Exception as e:
+        print(f"Error during recording: {str(e)}")
+        if current_csv:
+            current_csv.close()
+        if h5_file:
+            h5_file.close()
+        raise e
+    
+    finally:
+        # Close the current CSV file
+        if current_csv:
+            current_csv.close()
+        
+        # Update recording statistics
+        recording_stats.update({
+            'frames': frame_count,
+            'detections': detection_success_count,
+            'success_rate': detection_success_count / frame_count if frame_count > 0 else 0,
+            'sample_rate': frame_count / duration,
+            'completed_chunks': current_chunk,
+        })
+        
+        # Save JSON data if needed
+        if json_filename:
+            try:
+                with open(json_filename, 'w') as f:
+                    json.dump({
+                        'timestamp': timestamp,
+                        'stats': recording_stats,
+                        'data': all_gaze_data if len(all_gaze_data) <= 10000 else all_gaze_data[:10000]
+                    }, f)
+                recording_stats['files'].append(json_filename)
+            except Exception as e:
+                print(f"Error saving JSON data: {str(e)}")
+        
+        # Close HDF5 file if open
+        if h5_file:
+            h5_file.close()
+            recording_stats['files'].append(hdf5_filename)
     
     # Calculate and display recording stats
-    success_rate = detection_success_count / frame_count if frame_count > 0 else 0
-    sample_rate = frame_count / duration
+    success_rate = recording_stats['success_rate']
+    sample_rate = recording_stats['sample_rate']
+    
+    # Display file info based on chunking
+    if is_long_session and len(recording_stats['chunks']) > 0:
+        file_msg = f"Data saved in {len(recording_stats['files'])} files"
+    else:
+        file_msg = f"Data saved to: {os.path.basename(csv_filename)}"
     
     stats_msg = (
         f"Recording complete.\n"
         f"Success rate: {success_rate:.1%}\n"
         f"Average sample rate: {sample_rate:.1f} Hz\n"
-        f"Data saved to: {os.path.basename(csv_filename)}"
+        f"{file_msg}"
     )
     
     show_message(win, stats_msg, duration=3)
     
-    return {
-        'filename': csv_filename,
-        'duration': duration,
-        'frames': frame_count,
-        'detections': detection_success_count,
-        'success_rate': success_rate,
-        'sample_rate': sample_rate
-    }
+    return recording_stats
 
 def visualize_calibration_results(transform, raw_points, screen_points):
     """
@@ -1269,31 +1498,150 @@ def main():
             sys.exit(1)
 
 def get_recording_duration(win, kb):
-    """Get recording duration with proper input validation."""
+    """Get recording duration with proper input validation and support for longer sessions."""
+    # Default duration range
+    min_duration = 10
+    max_duration = 3600  # 1 hour max
+    
+    # Check if this is a long session
+    is_long_session = CONFIG['recording'].get('long_session', False)
+    
+    # Create preset buttons
+    presets = []
+    
+    # Add the presets - different for long sessions vs. standard
+    if is_long_session:
+        presets = [
+            {"label": "1 min", "value": 60},
+            {"label": "5 min", "value": 300},
+            {"label": "10 min", "value": 600},
+            {"label": "15 min", "value": 900},
+            {"label": "30 min", "value": 1800},
+            {"label": "60 min", "value": 3600}
+        ]
+        prompt_text = "Select recording duration (1-60 minutes):"
+        default_value = "1800"  # 30 minutes
+    else:
+        presets = [
+            {"label": "10 sec", "value": 10},
+            {"label": "20 sec", "value": 20},
+            {"label": "30 sec", "value": 30},
+            {"label": "45 sec", "value": 45},
+            {"label": "60 sec", "value": 60}
+        ]
+        prompt_text = "Enter recording duration (10-60 seconds):"
+        default_value = "30"
+    
+    # Create preset buttons visuals
+    preset_buttons = []
+    button_width = 0.15
+    button_height = 0.08
+    button_spacing = 0.02
+    total_width = (button_width + button_spacing) * len(presets) - button_spacing
+    start_x = -total_width / 2
+    
+    for i, preset in enumerate(presets):
+        x_pos = start_x + i * (button_width + button_spacing) + button_width/2
+        
+        # Create button rectangle
+        button_rect = visual.Rect(
+            win,
+            width=button_width,
+            height=button_height,
+            pos=(x_pos, 0),
+            lineColor="white",
+            fillColor=None
+        )
+        
+        # Create button text
+        button_text = visual.TextStim(
+            win,
+            text=preset["label"],
+            height=0.04,
+            color="white",
+            pos=(x_pos, 0)
+        )
+        
+        preset_buttons.append({
+            "rect": button_rect,
+            "text": button_text,
+            "value": preset["value"]
+        })
+    
+    # Create UI elements
     duration_prompt = visual.TextStim(
         win,
-        text="Enter recording duration (10-60 seconds):\nPress Enter to confirm, Escape to cancel",
+        text=f"{prompt_text}\nPress Enter to confirm, Escape to cancel",
         height=0.07,
         color="white",
-        pos=(0, 0.2)
+        pos=(0, 0.5)
     )
     
     duration_input = visual.TextStim(
         win,
-        text="30",
+        text=default_value,
         height=0.07,
         color="yellow",
         pos=(0, -0.2)
     )
     
-    duration_str = "30"
+    # Add instruction for custom input
+    custom_prompt = visual.TextStim(
+        win,
+        text="Or enter custom duration:",
+        height=0.05,
+        color="white",
+        pos=(0, -0.1)
+    )
+    
+    # Add units label
+    units_label = visual.TextStim(
+        win,
+        text="seconds" if not is_long_session else "seconds (max 3600)",
+        height=0.04,
+        color="white",
+        pos=(0.2, -0.2)
+    )
+    
+    # For long sessions, add a note about chunking
+    chunking_note = None
+    if is_long_session:
+        chunking_note = visual.TextStim(
+            win,
+            text=f"Note: Long recordings will be saved in {CONFIG['recording']['chunk_size']} second chunks",
+            height=0.04,
+            color="yellow",
+            pos=(0, -0.4)
+        )
+    
+    duration_str = default_value
     done = False
+    selected_preset = None
     
     while not done:
+        # Draw all UI elements
         duration_prompt.draw()
+        custom_prompt.draw()
         duration_input.draw()
+        units_label.draw()
+        
+        if chunking_note:
+            chunking_note.draw()
+        
+        # Draw preset buttons
+        for button in preset_buttons:
+            # Highlight selected preset
+            if selected_preset is not None and button["value"] == selected_preset:
+                button["rect"].fillColor = "#1e90ff"  # Highlight color
+            else:
+                button["rect"].fillColor = None
+            
+            button["rect"].draw()
+            button["text"].draw()
+        
         win.flip()
         
+        # Get keyboard input
         keys = handle_keyboard_input(kb)
         
         if 'escape' in keys:
@@ -1302,18 +1650,47 @@ def get_recording_duration(win, kb):
             done = True
         elif 'backspace' in keys:
             duration_str = duration_str[:-1] if duration_str else ""
+            # Clear selected preset when editing manually
+            selected_preset = None
         else:
+            # Handle numeric input for custom duration
+            numeric_input = False
             for key in keys:
-                if key in '0123456789' and len(duration_str) < 2:
+                if key in '0123456789' and len(duration_str) < 4:  # Allow up to 4 digits for long sessions
                     duration_str += key
+            
+            # Clear selected preset if manual input
+            if numeric_input:
+                selected_preset = None
         
+        # Check for mouse clicks on preset buttons
+        mouse = event.Mouse(visible=True, win=win)
+        mouse_pressed = mouse.getPressed()
+        if mouse_pressed[0]:  # Left button pressed
+            mouse_pos = mouse.getPos()
+            for button in preset_buttons:
+                if (abs(mouse_pos[0] - button["rect"].pos[0]) < button_width/2 and
+                    abs(mouse_pos[1] - button["rect"].pos[1]) < button_height/2):
+                    # Button clicked
+                    selected_preset = button["value"]
+                    duration_str = str(selected_preset)
+                    # Wait for button release to prevent multiple clicks
+                    while mouse.getPressed()[0]:
+                        core.wait(0.01)
+        
+        # Update text
         duration_input.text = duration_str
     
     try:
         duration = int(duration_str)
-        return max(10, min(60, duration))
+        # Use different min/max based on session type
+        if is_long_session:
+            return max(min_duration, min(max_duration, duration))
+        else:
+            return max(10, min(60, duration))
     except ValueError:
-        return 30
+        # Default fallbacks
+        return 30 if not is_long_session else 1800
 
 if __name__ == "__main__":
     main()
