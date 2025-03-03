@@ -3,456 +3,464 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Comprehensive WebGazer &amp; PsychoJS Experiment</title>
-    <!-- Load PsychoJS library from Pavlovia CDN -->
-    <script src="https://pavlovia.org/lib/psychojs-2020.2.3.js"></script>
-    <!-- Load WebGazer.js (ensure this file is available locally or adjust the path) -->
-    <script src="webgazer.js"></script>
-    <!-- Embedded CSS (style.css content) -->
+    <meta http-equiv="X-UA-Compatible" content="IE=edge" />
+    <title>Advanced Eye Tracking Experiment</title>
+    
+    <!-- Modern dependencies -->
+    <script src="https://unpkg.com/psychojs@2023.2.3/dist/psychojs.js"></script>
+    <script src="https://webgazer.cs.brown.edu/webgazer.js"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600&display=swap" rel="stylesheet">
+    
     <style>
-      body {
-        font-family: Arial, sans-serif;
-        background-color: #000;
-        color: #fff;
-        text-align: center;
+      :root {
+        --primary-color: #2563eb;
+        --secondary-color: #1e40af;
+        --background-color: #0f172a;
+        --text-color: #f8fafc;
+        --error-color: #ef4444;
+        --success-color: #22c55e;
+      }
+
+      * {
         margin: 0;
-        padding: 20px;
+        padding: 0;
+        box-sizing: border-box;
       }
-      #content {
-        margin: 20px auto;
-        max-width: 600px;
+
+      body {
+        font-family: 'Inter', system-ui, -apple-system, sans-serif;
+        background-color: var(--background-color);
+        color: var(--text-color);
+        line-height: 1.6;
       }
-      #export-links a {
-        display: inline-block;
-        margin: 10px;
-        padding: 10px 15px;
-        background-color: #444;
-        color: #fff;
-        text-decoration: none;
+
+      .container {
+        max-width: 800px;
+        margin: 0 auto;
+        padding: 2rem;
+      }
+
+      .header {
+        text-align: center;
+        margin-bottom: 3rem;
+      }
+
+      h1 {
+        font-size: 2.5rem;
+        margin-bottom: 1rem;
+        background: linear-gradient(to right, var(--primary-color), var(--secondary-color));
+        -webkit-background-clip: text;
+        background-clip: text;
+        color: transparent;
+      }
+
+      .experiment-status {
+        background: rgba(255, 255, 255, 0.1);
+        border-radius: 8px;
+        padding: 1.5rem;
+        margin-bottom: 2rem;
+      }
+
+      .controls {
+        display: flex;
+        gap: 1rem;
+        justify-content: center;
+        margin-bottom: 2rem;
+      }
+
+      .btn {
+        padding: 0.75rem 1.5rem;
+        border: none;
+        border-radius: 6px;
+        font-weight: 600;
+        cursor: pointer;
+        transition: all 0.2s ease;
+        background: var(--primary-color);
+        color: white;
+      }
+
+      .btn:hover {
+        background: var(--secondary-color);
+        transform: translateY(-1px);
+      }
+
+      .btn:disabled {
+        opacity: 0.5;
+        cursor: not-allowed;
+      }
+
+      .progress-container {
+        background: rgba(255, 255, 255, 0.1);
         border-radius: 4px;
+        height: 8px;
+        margin: 1rem 0;
+        overflow: hidden;
       }
-      #export-links a:hover {
-        background-color: #666;
+
+      .progress-bar {
+        height: 100%;
+        background: var(--primary-color);
+        transition: width 0.3s ease;
+        width: 0%;
+      }
+
+      .calibration-point {
+        position: absolute;
+        width: 20px;
+        height: 20px;
+        background: var(--primary-color);
+        border-radius: 50%;
+        transform: translate(-50%, -50%);
+      }
+
+      .export-container {
+        display: flex;
+        flex-direction: column;
+        gap: 1rem;
+        align-items: center;
+        margin-top: 2rem;
+      }
+
+      .export-btn {
+        background: transparent;
+        border: 2px solid var(--primary-color);
+        color: var(--text-color);
+      }
+
+      .export-btn:hover {
+        background: var(--primary-color);
+      }
+
+      .notification {
+        position: fixed;
+        bottom: 2rem;
+        right: 2rem;
+        padding: 1rem;
+        border-radius: 6px;
+        background: var(--success-color);
+        color: white;
+        opacity: 0;
+        transition: opacity 0.3s ease;
+      }
+
+      .notification.show {
+        opacity: 1;
+      }
+
+      .error {
+        background: var(--error-color);
+      }
+
+      @media (max-width: 768px) {
+        .container {
+          padding: 1rem;
+        }
+
+        h1 {
+          font-size: 2rem;
+        }
+
+        .controls {
+          flex-direction: column;
+        }
       }
     </style>
   </head>
   <body>
-    <!-- Initial instructions -->
-    <div id="content">
-      <h1>Welcome to the Eye Tracking Experiment</h1>
-      <p>
-        This experiment uses your USB 3.0 webcam for eye tracking via WebGazer.js integrated with PsychoJS.
-      </p>
-      <p>Please allow camera access when prompted. Press any key to begin.</p>
+    <div class="container">
+      <div class="header">
+        <h1>Eye Tracking Experiment</h1>
+        <p>Advanced gaze tracking using WebGazer.js and PsychoJS</p>
+      </div>
+
+      <div class="experiment-status">
+        <h2>Status</h2>
+        <div class="progress-container">
+          <div class="progress-bar" id="progressBar"></div>
+        </div>
+        <p id="statusText">Initializing experiment...</p>
+      </div>
+
+      <div class="controls">
+        <button class="btn" id="startBtn">Start Experiment</button>
+        <button class="btn" id="calibrateBtn" disabled>Calibrate</button>
+        <button class="btn" id="abortBtn" disabled>Stop Experiment</button>
+      </div>
+
+      <div id="experimentContainer"></div>
+
+      <div class="export-container" id="exportContainer" style="display: none;">
+        <button class="btn export-btn" id="exportCSV">Download CSV Data</button>
+        <button class="btn export-btn" id="exportJSON">Download JSON Data</button>
+      </div>
     </div>
-    
-    <!-- Container for download links after the experiment -->
-    <div id="export-links"></div>
-    
-    <!-- Embedded experiment JavaScript (experiment.js content) -->
-    <script type="module">
-      /* 
-       * Comprehensive PsychoJS Experiment with WebGazer.js Eye Tracking
-       *
-       * This script initializes WebGazer with custom camera constraints, runs a 9-point calibration routine,
-       * collects gaze samples during fixation and stimulus phases across multiple trials, and exports the data.
-       *
-       * Requirements:
-       *   - The PsychoJS library (loaded above).
-       *   - The WebGazer.js file (loaded above).
-       */
-      
-      import { core, data, sound, util, visual, event } from 'https://pavlovia.org/lib/psychojs-2020.2.3.js';
-      
-      // Create a global PsychoJS instance
-      const psychoJS = new PsychoJS({ debug: true });
-      psychoJS.serverManager.setExperimentInfo({
-        participant: '',
-        session: '001'
-      });
-      
-      // Global variables
-      let win, globalClock;
-      let calibrationData = [];           // Each element: [expectedX, expectedY, observedX, observedY]
-      let calibrationMapping = null;      // Object { a_x, b_x, a_y, b_y }
-      let calibrationQuality = 0;
-      let gazeDataLog = [];               // Stores all gaze samples (trial, timestamp, raw and calibrated positions)
-      let currentGaze = { x: null, y: null, timestamp: null };
-      
-      /**
-       * Initialize WebGazer with desired settings.
-       * Configures camera constraints and hides debug overlays.
-       */
-      function initWebGazer() {
-        return new Promise((resolve, reject) => {
-          try {
-            // Set camera constraints (adjust as needed)
-            webgazer.setCameraConstraints({
-              width: { ideal: 1280 },
-              height: { ideal: 720 },
-              frameRate: { ideal: 60 }
-            });
-            // Initialize WebGazer with a gaze listener that continuously updates currentGaze
-            webgazer.setGazeListener(function(data, elapsedTime) {
-              if (data == null) return;
-              currentGaze.x = data.x;
-              currentGaze.y = data.y;
-              currentGaze.timestamp = elapsedTime;
-            }).begin();
-      
-            // Hide video preview and overlays for performance
-            webgazer.showVideo(false)
-                     .showFaceOverlay(false)
-                     .showFaceFeedbackBox(false)
-                     .showPredictionPoints(false);
-            resolve();
-          } catch (e) {
-            reject(e);
-          }
-        });
-      }
-      
-      /**
-       * Runs the calibration routine.
-       * Displays a 3x3 grid of calibration points, collects several samples per point,
-       * computes a simple linear regression for both x and y to derive a mapping,
-       * and shows calibration quality. If quality is poor (<0.85) and the user presses 'r',
-       * the calibration is repeated.
-       */
-      async function runCalibration() {
-        // Define calibration points in normalized coordinates (norm units, where center is [0,0])
-        const calibrationPoints = [
-          [-0.8,  0.8], [0,  0.8], [0.8,  0.8],
-          [-0.8,  0],   [0,  0],   [0.8,  0],
-          [-0.8, -0.8], [0, -0.8], [0.8, -0.8]
-        ];
-        const dotSize = 0.05;
-        const pointColor = 'red';
-        const successColor = 'green';
-        const waitTime = 0.5; // seconds
-      
-        for (let i = 0; i < calibrationPoints.length; i++) {
-          // Create and draw the calibration dot and instruction text
-          let dot = new visual.Circle({
-            win: win,
-            radius: dotSize,
-            pos: calibrationPoints[i],
-            fillColor: pointColor,
-            lineColor: pointColor,
-            units: 'norm'
-          });
-          let instruction = new visual.TextStim({
-            win: win,
-            text: `Calibration:\nLook at the red dot and press SPACE.\n(${i+1} of ${calibrationPoints.length})`,
-            pos: [0, 0.9],
-            height: 0.05,
-            units: 'norm'
-          });
-          dot.draw();
-          instruction.draw();
-          win.flip();
-          
-          // Wait for participant input (SPACE to capture or ESCAPE to abort)
-          let keys = await event.waitKeys({ keyList: ['space', 'escape'] });
-          if (keys.includes('escape')) {
-            throw new Error("Calibration aborted by participant.");
-          }
-          
-          // Collect 3 samples for stability (each 50ms apart)
-          let samples = [];
-          for (let j = 0; j < 3; j++) {
-            await core.wait(0.05);
-            if (currentGaze.x != null && currentGaze.y != null) {
-              samples.push({ x: currentGaze.x, y: currentGaze.y });
+
+    <div class="notification" id="notification"></div>
+
+    <script>
+      // Global state
+      let psychoJS;
+      let experimentWindow;
+      let gazeData = [];
+      let calibrationData = [];
+      let isExperimentRunning = false;
+      let currentTrial = 0;
+
+      // Configuration
+      const config = {
+        fullscreen: true,
+        backgroundColor: '#0f172a',
+        frameRate: 60,
+        calibrationPoints: 9,
+        trialCount: 5,
+        sampleRate: 30
+      };
+
+      // UI Elements
+      const ui = {
+        startBtn: document.getElementById('startBtn'),
+        calibrateBtn: document.getElementById('calibrateBtn'),
+        abortBtn: document.getElementById('abortBtn'),
+        progressBar: document.getElementById('progressBar'),
+        statusText: document.getElementById('statusText'),
+        notification: document.getElementById('notification'),
+        exportContainer: document.getElementById('exportContainer')
+      };
+
+      // Initialize WebGazer
+      async function initializeWebGazer() {
+        try {
+          await webgazer.setGazeListener((data, timestamp) => {
+            if (data && isExperimentRunning) {
+              gazeData.push({
+                timestamp,
+                x: data.x,
+                y: data.y,
+                trial: currentTrial
+              });
             }
-          }
-          if (samples.length > 0) {
-            // Average the samples
-            let avgX = samples.reduce((sum, s) => sum + s.x, 0) / samples.length;
-            let avgY = samples.reduce((sum, s) => sum + s.y, 0) / samples.length;
-            // Convert from pixels to normalized coordinates using the window size
-            let normX = (avgX - win.size[0]/2) / (win.size[0]/2);
-            let normY = (win.size[1]/2 - avgY) / (win.size[1]/2);
-            // Save: [expected (calibration point), observed (gaze) coordinates]
-            calibrationData.push([ calibrationPoints[i][0], calibrationPoints[i][1], normX, normY ]);
-          }
-          
-          // Visual feedback: change dot color to success color
-          dot.fillColor = successColor;
-          dot.lineColor = successColor;
-          dot.draw();
-          instruction.draw();
-          win.flip();
-          await core.wait(waitTime);
-        }
-        // Compute calibration mapping only if sufficient data was collected
-        if (calibrationData.length < 5) {
-          calibrationMapping = { a_x: 1, b_x: 0, a_y: 1, b_y: 0 };
-          calibrationQuality = 0;
+          }).begin();
+
+          // Configure WebGazer
+          webgazer.showVideo(false)
+                  .showFaceOverlay(false)
+                  .showFaceFeedbackBox(false)
+                  .showPredictionPoints(false);
+
+          return true;
+        } catch (error) {
+          showNotification('Failed to initialize WebGazer: ' + error.message, true);
           return false;
         }
-        // For x dimension
-        let expectedX = calibrationData.map(d => d[0]);
-        let observedX = calibrationData.map(d => d[2]);
-        let { a: a_x, b: b_x, r2: r2_x } = linearRegression(observedX, expectedX);
-        // For y dimension
-        let expectedY = calibrationData.map(d => d[1]);
-        let observedY = calibrationData.map(d => d[3]);
-        let { a: a_y, b: b_y, r2: r2_y } = linearRegression(observedY, expectedY);
-        calibrationMapping = { a_x, b_x, a_y, b_y };
-        calibrationQuality = (r2_x + r2_y) / 2;
-        
-        // Display calibration quality and ask if the user wants to recalibrate if quality is low (<0.85)
-        let qualityText = `Calibration quality: ${calibrationQuality.toFixed(2)}.\nPress 'r' to recalibrate or any other key to continue.`;
-        let qualityStim = new visual.TextStim({
-          win: win,
-          text: qualityText,
-          pos: [0, 0],
-          height: 0.05,
+      }
+
+      // Initialize PsychoJS
+      function initializePsychoJS() {
+        psychoJS = new PsychoJS({
+          debug: true
+        });
+
+        experimentWindow = new psychoJS.visual.Window({
+          size: [window.innerWidth, window.innerHeight],
+          fullscr: config.fullscreen,
+          color: new psychoJS.Color(config.backgroundColor),
           units: 'norm'
         });
-        qualityStim.draw();
-        win.flip();
-        let resp = await event.waitKeys({ keyList: ['r', 'escape', 'c'] });
-        if (resp.includes('escape')) {
-          throw new Error("Calibration aborted.");
-        }
-        if (resp.includes('r') && calibrationQuality < 0.85) {
-          calibrationData = [];
-          return await runCalibration();
-        }
+
         return true;
       }
-      
-      /**
-       * A simple linear regression function.
-       * Given arrays x and y, returns slope (a), intercept (b), and r² value.
-       */
-      function linearRegression(x, y) {
-        let n = x.length;
-        let sumX = x.reduce((a, b) => a + b, 0);
-        let sumY = y.reduce((a, b) => a + b, 0);
-        let sumXY = 0, sumXX = 0;
-        for (let i = 0; i < n; i++) {
-          sumXY += x[i] * y[i];
-          sumXX += x[i] * x[i];
-        }
-        let a = (n * sumXY - sumX * sumY) / (n * sumXX - sumX * sumX);
-        let b = (sumY - a * sumX) / n;
-        // Compute R²
-        let yMean = sumY / n;
-        let ssTot = y.reduce((acc, val) => acc + Math.pow(val - yMean, 2), 0);
-        let ssRes = 0;
-        for (let i = 0; i < n; i++) {
-          let yiPred = a * x[i] + b;
-          ssRes += Math.pow(y[i] - yiPred, 2);
-        }
-        let r2 = 1 - (ssRes / ssTot);
-        return { a, b, r2 };
-      }
-      
-      /**
-       * Apply the computed calibration mapping to a given observed gaze point.
-       */
-      function applyCalibration(obsX, obsY) {
-        if (!calibrationMapping) return { x: obsX, y: obsY };
-        let calibratedX = calibrationMapping.a_x * obsX + calibrationMapping.b_x;
-        let calibratedY = calibrationMapping.a_y * obsY + calibrationMapping.b_y;
-        return { x: calibratedX, y: calibratedY };
-      }
-      
-      /**
-       * Runs a single trial.
-       * Displays a fixation cross followed by a stimulus while continuously logging gaze samples.
-       */
-      async function runTrial(trialNum) {
-        const fixationDuration = 1.0;
-        const stimulusDuration = 2.0;
-        const interTrialInterval = 0.5;
+
+      // Calibration procedure
+      async function runCalibration() {
+        const points = [
+          [-0.8, 0.8], [0, 0.8], [0.8, 0.8],
+          [-0.8, 0], [0, 0], [0.8, 0],
+          [-0.8, -0.8], [0, -0.8], [0.8, -0.8]
+        ];
+
+        calibrationData = [];
         
-        // Fixation phase
-        let fixation = new visual.TextStim({
-          win: win,
+        for (let i = 0; i < points.length; i++) {
+          const point = points[i];
+          
+          // Create calibration point
+          const dot = new psychoJS.visual.Circle({
+            win: experimentWindow,
+            radius: 0.02,
+            pos: point,
+            fillColor: new psychoJS.Color('white'),
+            lineWidth: 0
+          });
+
+          // Show point
+          dot.draw();
+          experimentWindow.flip();
+
+          // Wait for fixation
+          await new Promise(resolve => setTimeout(resolve, 1000));
+
+          // Collect samples
+          const samples = [];
+          for (let j = 0; j < 10; j++) {
+            const prediction = await webgazer.getCurrentPrediction();
+            if (prediction) {
+              samples.push({
+                x: prediction.x,
+                y: prediction.y
+              });
+            }
+            await new Promise(resolve => setTimeout(resolve, 50));
+          }
+
+          // Calculate average
+          if (samples.length > 0) {
+            const avgX = samples.reduce((sum, s) => sum + s.x, 0) / samples.length;
+            const avgY = samples.reduce((sum, s) => sum + s.y, 0) / samples.length;
+            
+            calibrationData.push({
+              target: point,
+              measured: [avgX, avgY]
+            });
+          }
+
+          // Update progress
+          updateProgress((i + 1) / points.length * 100);
+        }
+
+        return calibrationData.length === points.length;
+      }
+
+      // Run a single trial
+      async function runTrial(trialNumber) {
+        currentTrial = trialNumber;
+        
+        // Show fixation cross
+        const fixation = new psychoJS.visual.TextStim({
+          win: experimentWindow,
           text: '+',
-          pos: [0, 0],
-          height: 0.2,
-          units: 'norm'
-        });
-        fixation.draw();
-        win.flip();
-        let trialStart = core.getTime();
-        while (core.getTime() - trialStart < fixationDuration) {
-          if (currentGaze.x != null && currentGaze.y != null) {
-            // Convert pixel values to normalized coordinates
-            let normObsX = (currentGaze.x - win.size[0] / 2) / (win.size[0] / 2);
-            let normObsY = (win.size[1] / 2 - currentGaze.y) / (win.size[1] / 2);
-            let calibrated = applyCalibration(normObsX, normObsY);
-            gazeDataLog.push({
-              trial: trialNum,
-              timestamp: core.getTime(),
-              rawX: normObsX,
-              rawY: normObsY,
-              calibratedX: calibrated.x,
-              calibratedY: calibrated.y,
-              phase: 'fixation'
-            });
-          }
-          await core.wait(0.01);
-        }
-        
-        // Stimulus phase
-        let stimulus = new visual.TextStim({
-          win: win,
-          text: `Trial ${trialNum}`,
-          pos: [0, 0],
           height: 0.1,
-          units: 'norm'
+          color: new psychoJS.Color('white')
         });
+
+        fixation.draw();
+        experimentWindow.flip();
+        await new Promise(resolve => setTimeout(resolve, 1000));
+
+        // Show stimulus
+        const stimulus = new psychoJS.visual.TextStim({
+          win: experimentWindow,
+          text: `Trial ${trialNumber}`,
+          height: 0.1,
+          color: new psychoJS.Color('white')
+        });
+
         stimulus.draw();
-        win.flip();
-        trialStart = core.getTime();
-        while (core.getTime() - trialStart < stimulusDuration) {
-          if (currentGaze.x != null && currentGaze.y != null) {
-            let normObsX = (currentGaze.x - win.size[0] / 2) / (win.size[0] / 2);
-            let normObsY = (win.size[1] / 2 - currentGaze.y) / (win.size[1] / 2);
-            let calibrated = applyCalibration(normObsX, normObsY);
-            gazeDataLog.push({
-              trial: trialNum,
-              timestamp: core.getTime(),
-              rawX: normObsX,
-              rawY: normObsY,
-              calibratedX: calibrated.x,
-              calibratedY: calibrated.y,
-              phase: 'stimulus'
-            });
-          }
-          await core.wait(0.01);
-        }
-        
+        experimentWindow.flip();
+        await new Promise(resolve => setTimeout(resolve, 2000));
+
         // Inter-trial interval
-        win.flip();
-        await core.wait(interTrialInterval);
+        experimentWindow.flip();
+        await new Promise(resolve => setTimeout(resolve, 500));
       }
-      
-      /**
-       * Exports the logged gaze data.
-       * Creates download links for CSV and JSON data.
-       */
+
+      // Export data
       function exportData() {
-        // CSV export
-        let csvContent = "data:text/csv;charset=utf-8,trial,timestamp,rawX,rawY,calibratedX,calibratedY,phase\n";
-        gazeDataLog.forEach(row => {
-          csvContent += `${row.trial},${row.timestamp},${row.rawX.toFixed(3)},${row.rawY.toFixed(3)},${row.calibratedX.toFixed(3)},${row.calibratedY.toFixed(3)},${row.phase}\n`;
-        });
-        let encodedUri = encodeURI(csvContent);
-        let csvLink = document.createElement("a");
-        csvLink.setAttribute("href", encodedUri);
-        csvLink.setAttribute("download", "gaze_data.csv");
-        csvLink.innerHTML = "Download CSV Data";
-        document.getElementById("export-links").appendChild(csvLink);
-        
-        // JSON export
-        let jsonContent = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(gazeDataLog, null, 2));
-        let jsonLink = document.createElement("a");
-        jsonLink.setAttribute("href", jsonContent);
-        jsonLink.setAttribute("download", "gaze_data.json");
-        jsonLink.innerHTML = "Download JSON Data";
-        document.getElementById("export-links").appendChild(jsonLink);
+        // CSV Export
+        const csvContent = "data:text/csv;charset=utf-8," + 
+          "timestamp,x,y,trial\n" +
+          gazeData.map(row => 
+            `${row.timestamp},${row.x},${row.y},${row.trial}`
+          ).join("\n");
+
+        const csvLink = document.createElement('a');
+        csvLink.href = encodeURI(csvContent);
+        csvLink.download = 'gaze_data.csv';
+        csvLink.click();
+
+        // JSON Export
+        const jsonContent = "data:text/json;charset=utf-8," + 
+          encodeURIComponent(JSON.stringify(gazeData));
+
+        const jsonLink = document.createElement('a');
+        jsonLink.href = jsonContent;
+        jsonLink.download = 'gaze_data.json';
+        jsonLink.click();
       }
-      
-      /**
-       * Main experiment flow.
-       * Initializes WebGazer and PsychoJS window, shows instructions,
-       * runs calibration, then a set of trials, and finally exports the data.
-       */
-      async function runExperiment() {
+
+      // UI Updates
+      function updateProgress(percent) {
+        ui.progressBar.style.width = `${percent}%`;
+      }
+
+      function showNotification(message, isError = false) {
+        ui.notification.textContent = message;
+        ui.notification.classList.toggle('error', isError);
+        ui.notification.classList.add('show');
+        setTimeout(() => ui.notification.classList.remove('show'), 3000);
+      }
+
+      function resetUI() {
+        ui.calibrateBtn.disabled = true;
+        ui.abortBtn.disabled = true;
+        ui.progressBar.style.width = '0%';
+        ui.statusText.textContent = 'Experiment ready';
+        ui.exportContainer.style.display = 'none';
+      }
+
+      // Event Handlers
+      ui.startBtn.addEventListener('click', async () => {
         try {
-          // Initialize WebGazer
-          await initWebGazer();
-        } catch (e) {
-          alert("Error initializing WebGazer: " + e);
-          return;
-        }
-        
-        // Create a full-screen PsychoJS window with a black background.
-        win = new visual.Window({
-          fullscr: true,
-          color: [-1, -1, -1],
-          units: 'norm'
-        });
-        // Estimate window size in pixels from screenRect
-        win.size = win._win.screenRect.slice(2);
-        globalClock = new core.Clock();
-        
-        // Display welcome instructions (overrides initial page content)
-        let welcome = new visual.TextStim({
-          win: win,
-          text: "Welcome to the experiment.\n\nPress any key to begin.",
-          pos: [0, 0],
-          height: 0.05,
-          units: 'norm'
-        });
-        welcome.draw();
-        win.flip();
-        await event.waitKeys();
-        
-        // Run calibration routine
-        try {
-          let calSuccess = await runCalibration();
-          if (!calSuccess) {
-            alert("Calibration failed or was aborted.");
-            return;
+          const webgazerInitialized = await initializeWebGazer();
+          const psychojsInitialized = initializePsychoJS();
+
+          if (webgazerInitialized && psychojsInitialized) {
+            ui.calibrateBtn.disabled = false;
+            ui.abortBtn.disabled = false;
+            showNotification('Experiment initialized successfully');
           }
-        } catch (e) {
-          alert("Calibration aborted: " + e);
-          return;
+        } catch (error) {
+          showNotification(error.message, true);
         }
-        
-        // Confirm calibration success
-        let calSuccessMsg = new visual.TextStim({
-          win: win,
-          text: "Calibration completed successfully.\nPress any key to begin trials.",
-          pos: [0, 0],
-          height: 0.05,
-          units: 'norm'
-        });
-        calSuccessMsg.draw();
-        win.flip();
-        await event.waitKeys();
-        
-        // Run trials (modify numTrials as needed)
-        const numTrials = 5;
-        for (let trial = 1; trial <= numTrials; trial++) {
-          await runTrial(trial);
-          let abortKeys = await event.getKeys({ keyList: ['escape'] });
-          if (abortKeys.includes('escape')) break;
+      });
+
+      ui.calibrateBtn.addEventListener('click', async () => {
+        try {
+          ui.statusText.textContent = 'Calibrating...';
+          const calibrationSuccess = await runCalibration();
+          
+          if (calibrationSuccess) {
+            showNotification('Calibration completed successfully');
+            isExperimentRunning = true;
+            
+            // Run trials
+            for (let trial = 1; trial <= config.trialCount; trial++) {
+              if (!isExperimentRunning) break;
+              await runTrial(trial);
+              updateProgress(trial / config.trialCount * 100);
+            }
+
+            // Show export options
+            ui.exportContainer.style.display = 'flex';
+          }
+        } catch (error) {
+          showNotification(error.message, true);
         }
-        
-        // Debriefing message
-        let debrief = new visual.TextStim({
-          win: win,
-          text: "Experiment completed.\nThank you for your participation!\nPress any key to export data and end.",
-          pos: [0, 0],
-          height: 0.05,
-          units: 'norm'
-        });
-        debrief.draw();
-        win.flip();
-        await event.waitKeys();
-        
-        // Export gaze data
-        exportData();
-        
-        // Wait a moment for downloads then cleanup
-        await core.wait(5);
+      });
+
+      ui.abortBtn.addEventListener('click', () => {
+        isExperimentRunning = false;
         webgazer.end();
-        win.close();
-        core.quit();
-      }
-      
-      // Start the experiment
-      runExperiment().catch(e => {
-        console.error("Experiment error: ", e);
+        showNotification('Experiment aborted');
+        resetUI();
+      });
+
+      ui.exportCSV.addEventListener('click', () => exportData());
+      ui.exportJSON.addEventListener('click', () => exportData());
+
+      // Handle window unload
+      window.addEventListener('beforeunload', () => {
+        if (webgazer) webgazer.end();
+        if (psychoJS) psychoJS.quit();
       });
     </script>
   </body>
