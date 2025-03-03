@@ -193,7 +193,7 @@
         <button class="btn export-btn" id="exportJSON" type="button">Download JSON Data</button>
       </div>
     </div>
-
+    
     <div class="notification" id="notification"></div>
 
     <script>
@@ -253,13 +253,13 @@
                 trial: currentTrial
               });
             }
-          }).begin();
-
+            }).begin();
+      
           // Configure WebGazer
-          webgazer.showVideo(false)
-                  .showFaceOverlay(false)
-                  .showFaceFeedbackBox(false)
-                  .showPredictionPoints(false);
+            webgazer.showVideo(false)
+                     .showFaceOverlay(false)
+                     .showFaceFeedbackBox(false)
+                     .showPredictionPoints(false);
 
           return true;
         } catch (error) {
@@ -826,12 +826,12 @@
         stimulus.draw();
         experimentWindow.flip();
         await new Promise(resolve => setTimeout(resolve, 2000));
-
+        
         // Inter-trial interval
         experimentWindow.flip();
         await new Promise(resolve => setTimeout(resolve, 500));
       }
-
+      
       // Export data
       function exportData() {
         // CSV Export
@@ -1006,7 +1006,7 @@
             // Run trials
             for (let trial = 1; trial <= config.trialCount; trial++) {
               if (!isExperimentRunning) break;
-              await runTrial(trial);
+          await runTrial(trial);
               updateProgress(trial / config.trialCount * 100);
             }
 
